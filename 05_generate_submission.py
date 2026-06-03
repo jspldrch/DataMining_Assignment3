@@ -8,13 +8,22 @@ import pandas as pd
 import joblib
 from pathlib import Path
 
-try:
-    import google.colab; IN_COLAB = True
-except ImportError:
-    IN_COLAB = False
+def _find_base_dir():
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.exists():
+        for comp_dir in kaggle_input.iterdir():
+            if (comp_dir / "train" / "train").exists():
+                return comp_dir, Path("/kaggle/working")
+    try:
+        import google.colab
+        p = Path("/content/DataMining_Assignment3")
+        return p, p / "outputs"
+    except ImportError:
+        pass
+    p = Path(__file__).parent
+    return p, p / "outputs"
 
-BASE_DIR = Path("/content/DataMining_Assignment3") if IN_COLAB else Path(__file__).parent
-OUT_DIR  = BASE_DIR / "outputs"
+BASE_DIR, OUT_DIR = _find_base_dir()
 
 model    = joblib.load(OUT_DIR / "best_model.pkl")
 X_test   = np.load(OUT_DIR / "X_test_features.npy")
@@ -24,7 +33,7 @@ preds = model.predict(X_test)
 
 submission = pd.DataFrame({"Id": test_ids, "Label": preds})
 submission = submission.sort_values("Id").reset_index(drop=True)
-submission.to_csv(BASE_DIR / "submission.csv", index=False)
+submission.to_csv(OUT_DIR / "submission.csv", index=False)
 
-print(f"Saved {len(submission)} predictions to submission.csv")
+print(f"Saved {len(submission)} predictions to {OUT_DIR / 'submission.csv'}")
 print(submission["Label"].value_counts().sort_index().to_string())

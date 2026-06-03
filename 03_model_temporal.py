@@ -40,16 +40,26 @@ except ImportError:
     HAS_XGB = False
     print("XGBoost not installed. Using Random Forest only. Install with: pip install xgboost")
 
-try:
-    import google.colab; IN_COLAB = True
-except ImportError:
-    IN_COLAB = False
+def _find_base_dir():
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.exists():
+        for comp_dir in kaggle_input.iterdir():
+            if (comp_dir / "train" / "train").exists():
+                return comp_dir, Path("/kaggle/working")
+    try:
+        import google.colab
+        p = Path("/content/DataMining_Assignment3")
+        return p, p / "outputs"
+    except ImportError:
+        pass
+    p = Path(__file__).parent
+    return p, p / "outputs"
 
-BASE_DIR  = Path("/content/DataMining_Assignment3") if IN_COLAB else Path(__file__).parent
+BASE_DIR, OUT_DIR = _find_base_dir()
 TRAIN_DIR = BASE_DIR / "train" / "train"
 TEST_DIR  = BASE_DIR / "test"  / "test"
-OUT_DIR   = BASE_DIR / "outputs"
-OUT_DIR.mkdir(exist_ok=True)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+print(f"BASE_DIR : {BASE_DIR}")
 
 FEAT_COLS = ["mean_x", "mean_y", "mean_z", "std_x", "std_y", "std_z"]
 
@@ -227,44 +237,151 @@ print(f"\nBest model: {best_name}  (acc={cv_results[best_name].mean():.4f})")
 final_model = models[best_name]
 final_model.fit(X_train, y_train)
 
-# In-sample classification report (just for analysis; not a test metric)
-y_pred_train = final_model.predict(X_train)
-print("\nIn-sample Classification Report:")
-print(classification_report(y_train, y_pred_train, digits=4))
+from sklearn.metrics import classification_report as cr_fn
+import sklearn.metrics as skm
 
-# Confusion matrix
-cm = confusion_matrix(y_train, y_pred_train)
-fig, ax = plt.subplots(figsize=(7, 6))
-sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
-ax.set_xlabel("Predicted")
-ax.set_ylabel("True")
-ax.set_title(f"Confusion Matrix (in-sample) – {best_name}")
+y_pred_cv = np.zeros_like(y_train)
+for tr, val in cv.split(X_train, y_train):
+    clone = Pipeline(final_model.steps)  # shallow copy
+    clone.fit(X_train[tr], y_train[tr])
+    y_pred_cv[val] = clone.predict(X_train[val])
+
+print("\nCV Classification Report:")
+print(cr_fn(y_train, y_pred_cv, digits=4))
+
+sns.set_style("whitegrid")
+sns.set_context("paper", font_scale=1.2)
+
+# ── Plot 1: CV model comparison bar chart ─────────────────────────────────────
+fig, ax = plt.subplots(figsize=(7, 4))
+model_names = list(cv_results.keys())
+m_means = [cv_results[n].mean() for n in model_names]
+m_stds  = [cv_results[n].std()  for n in model_names]
+colors  = sns.color_palette("Set2", len(model_names))
+bars = ax.bar(model_names, m_means, yerr=m_stds, capsize=5,
+              color=colors, edgecolor="white", width=0.5)
+for bar, m in zip(bars, m_means):
+    ax.text(bar.get_x() + bar.get_width()/2, m + 0.005,
+            f"{m:.4f}", ha="center", va="bottom", fontsize=11, fontweight="bold")
+ax.set_ylabel("5-fold CV Accuracy")
+ax.set_title("Model CV Accuracy (237 temporal features)")
+ax.set_ylim(0, 1.08)
 plt.tight_layout()
-plt.savefig(OUT_DIR / "03_confusion_matrix.png", dpi=150)
+plt.savefig(OUT_DIR / "03_model_cv_comparison.png", dpi=180, bbox_inches="tight")
 plt.close()
+print("Saved: 03_model_cv_comparison.png")
 
-# Feature importance (if RF or XGB)
-clf = final_model.named_steps["clf"]
-if hasattr(clf, "feature_importances_"):
-    importances = clf.feature_importances_
+# ── Plot 2: Normalized confusion matrix (CV predictions) ──────────────────────
+cm      = confusion_matrix(y_train, y_pred_cv)
+cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=axes[0],
+            xticklabels=range(6), yticklabels=range(6), linewidths=0.5)
+axes[0].set_xlabel("Predicted Class")
+axes[0].set_ylabel("True Class")
+axes[0].set_title("Confusion Matrix (counts, CV)")
+
+sns.heatmap(cm_norm, annot=True, fmt=".2f", cmap="Blues", ax=axes[1],
+            xticklabels=range(6), yticklabels=range(6), linewidths=0.5,
+            vmin=0, vmax=1)
+axes[1].set_xlabel("Predicted Class")
+axes[1].set_ylabel("True Class")
+axes[1].set_title("Confusion Matrix (row-normalized, CV)")
+
+plt.suptitle(f"Confusion Matrix — {best_name}", fontsize=13)
+plt.tight_layout()
+plt.savefig(OUT_DIR / "03_confusion_matrix.png", dpi=180, bbox_inches="tight")
+plt.close()
+print("Saved: 03_confusion_matrix.png")
+
+# ── Plot 3: Per-class precision / recall / F1 ─────────────────────────────────
+from sklearn.metrics import precision_score, recall_score, f1_score
+prec = precision_score(y_train, y_pred_cv, average=None, zero_division=0)
+rec  = recall_score(y_train, y_pred_cv, average=None, zero_division=0)
+f1   = f1_score(y_train, y_pred_cv, average=None, zero_division=0)
+
+x = np.arange(6)
+width = 0.25
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.bar(x - width, prec, width, label="Precision", color="#3498db")
+ax.bar(x,         rec,  width, label="Recall",    color="#e67e22")
+ax.bar(x + width, f1,   width, label="F1-Score",  color="#2ecc71")
+for i in x:
+    ax.text(i - width, prec[i] + 0.01, f"{prec[i]:.2f}", ha="center", fontsize=7)
+    ax.text(i,         rec[i]  + 0.01, f"{rec[i]:.2f}",  ha="center", fontsize=7)
+    ax.text(i + width, f1[i]   + 0.01, f"{f1[i]:.2f}",   ha="center", fontsize=7)
+ax.set_xticks(x)
+ax.set_xticklabels([f"Class {i}" for i in range(6)])
+ax.set_ylabel("Score")
+ax.set_ylim(0, 1.12)
+ax.set_title("Per-Class Precision, Recall, F1-Score (5-fold CV)")
+ax.legend()
+plt.tight_layout()
+plt.savefig(OUT_DIR / "03_per_class_metrics.png", dpi=180, bbox_inches="tight")
+plt.close()
+print("Saved: 03_per_class_metrics.png")
+
+# ── Plot 4: Feature importance ────────────────────────────────────────────────
+clf_obj = final_model.named_steps["clf"]
+if hasattr(clf_obj, "feature_importances_"):
+    importances = clf_obj.feature_importances_
     top_k = 20
     idx = np.argsort(importances)[-top_k:][::-1]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.bar(np.arange(top_k), importances[idx])
-    ax.set_xticks(np.arange(top_k))
-    ax.set_xticklabels([f"f{i}" for i in idx], rotation=45, ha="right")
-    ax.set_title(f"Top {top_k} Feature Importances")
-    ax.set_xlabel("Feature index")
-    ax.set_ylabel("Importance")
-    plt.tight_layout()
-    plt.savefig(OUT_DIR / "03_feature_importance.png", dpi=150)
-    plt.close()
 
-# ── Save model and features for prediction ────────────────────────────────────
+    feature_groups = (
+        ["GlobalStat"] * 54 + ["Magnitude"] * 3 +
+        ["TempSeg"]    * 120 + ["Autocorr"] * 24 +
+        ["Trend"]      * 6  + ["Spectral"] * 30
+    )
+    group_colors = {"GlobalStat": "#3498db", "Magnitude": "#e74c3c",
+                    "TempSeg": "#2ecc71", "Autocorr": "#f39c12",
+                    "Trend": "#9b59b6", "Spectral": "#1abc9c"}
+    bar_colors = [group_colors.get(feature_groups[i], "gray") for i in idx]
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.bar(np.arange(top_k), importances[idx], color=bar_colors, edgecolor="white")
+    ax.set_xticks(np.arange(top_k))
+    ax.set_xticklabels([f"f{i}\n({feature_groups[i]})" for i in idx],
+                       rotation=45, ha="right", fontsize=7)
+    ax.set_title(f"Top {top_k} Feature Importances by Group")
+    ax.set_ylabel("Importance")
+    patches = [plt.Rectangle((0,0),1,1, color=c, label=g)
+               for g, c in group_colors.items()]
+    ax.legend(handles=patches, loc="upper right", fontsize=8, title="Feature group")
+    plt.tight_layout()
+    plt.savefig(OUT_DIR / "03_feature_importance.png", dpi=180, bbox_inches="tight")
+    plt.close()
+    print("Saved: 03_feature_importance.png")
+
+# ── Plot 5: Feature group importance summary ──────────────────────────────────
+if hasattr(clf_obj, "feature_importances_"):
+    group_imp = {}
+    for i, imp in enumerate(importances):
+        g = feature_groups[i]
+        group_imp[g] = group_imp.get(g, 0) + imp
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    groups = list(group_imp.keys())
+    vals   = [group_imp[g] for g in groups]
+    colors = [group_colors[g] for g in groups]
+    bars = ax.barh(groups, vals, color=colors, edgecolor="white")
+    for bar, v in zip(bars, vals):
+        ax.text(v + 0.002, bar.get_y() + bar.get_height()/2,
+                f"{v:.4f}", va="center", fontsize=10)
+    ax.set_xlabel("Total Feature Importance")
+    ax.set_title("Feature Group Importance (summed)")
+    plt.tight_layout()
+    plt.savefig(OUT_DIR / "03_feature_group_importance.png", dpi=180, bbox_inches="tight")
+    plt.close()
+    print("Saved: 03_feature_group_importance.png")
+
+# ── Save model ────────────────────────────────────────────────────────────────
 joblib.dump(final_model, OUT_DIR / "best_model.pkl")
-np.save(OUT_DIR / "X_test_features.npy",  X_test)
-np.save(OUT_DIR / "test_file_ids.npy",    test_ids)
+np.save(OUT_DIR / "X_test_features.npy", X_test)
+np.save(OUT_DIR / "test_file_ids.npy",   test_ids)
 
 print(f"\nModel saved to: {OUT_DIR / 'best_model.pkl'}")
-print(f"Outputs saved to: {OUT_DIR}")
-print("\nRun 05_generate_submission.py to produce the Kaggle CSV.")
+print(f"All outputs saved to: {OUT_DIR}")
+print("Run 05_generate_submission.py to produce the Kaggle CSV.")

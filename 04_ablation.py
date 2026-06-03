@@ -30,15 +30,25 @@ try:
 except ImportError:
     HAS_XGB = False
 
-try:
-    import google.colab; IN_COLAB = True
-except ImportError:
-    IN_COLAB = False
+def _find_base_dir():
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.exists():
+        for comp_dir in kaggle_input.iterdir():
+            if (comp_dir / "train" / "train").exists():
+                return comp_dir, Path("/kaggle/working")
+    try:
+        import google.colab
+        p = Path("/content/DataMining_Assignment3")
+        return p, p / "outputs"
+    except ImportError:
+        pass
+    p = Path(__file__).parent
+    return p, p / "outputs"
 
-BASE_DIR  = Path("/content/DataMining_Assignment3") if IN_COLAB else Path(__file__).parent
+BASE_DIR, OUT_DIR = _find_base_dir()
 TRAIN_DIR = BASE_DIR / "train" / "train"
-OUT_DIR   = BASE_DIR / "outputs"
-OUT_DIR.mkdir(exist_ok=True)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+print(f"BASE_DIR : {BASE_DIR}")
 
 FEAT_COLS = ["mean_x", "mean_y", "mean_z", "std_x", "std_y", "std_z"]
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -293,54 +303,157 @@ for threshold in [None, 1, 3, 5, 10, 20]:
 
 all_results["D_clipping"] = ablation_d
 
-# ── Visualize ablation results ─────────────────────────────────────────────────
-fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+sns.set_style("whitegrid")
+sns.set_context("paper", font_scale=1.2)
+full_acc = ablation_a["All features"][0]
 
-# A – feature groups (leave-one-out)
-ax = axes[0, 0]
-loo_keys = [k for k in ablation_a if k.startswith("w/o") or k == "All features"]
+# ── Plot A: Leave-one-out feature group ablation ───────────────────────────────
+loo_keys  = ["All features"] + [k for k in ablation_a if k.startswith("w/o")]
 loo_means = [ablation_a[k][0] for k in loo_keys]
 loo_stds  = [ablation_a[k][1] for k in loo_keys]
-colors = ["steelblue"] + ["salmon"] * (len(loo_keys) - 1)
-ax.barh(loo_keys, loo_means, xerr=loo_stds, color=colors, capsize=3)
-ax.axvline(ablation_a["All features"][0], color="steelblue", linestyle="--", lw=1)
-ax.set_xlabel("CV Accuracy")
-ax.set_title("A: Feature Group Leave-One-Out")
+loo_drops = [full_acc - m for m in loo_means]
+bar_colors = ["#27ae60"] + ["#e74c3c" if d > 0.005 else "#f39c12" for d in loo_drops[1:]]
 
-# B – model choice
-ax = axes[0, 1]
+fig, ax = plt.subplots(figsize=(10, 5))
+bars = ax.barh(loo_keys[::-1], loo_means[::-1], xerr=loo_stds[::-1],
+               color=bar_colors[::-1], capsize=4, edgecolor="white", height=0.6)
+for bar, m, d in zip(bars, loo_means[::-1], loo_drops[::-1]):
+    ax.text(m + 0.002, bar.get_y() + bar.get_height()/2,
+            f"{m:.4f}  (Δ={-d:+.4f})" if d != 0 else f"{m:.4f}",
+            va="center", fontsize=9)
+ax.axvline(full_acc, color="#27ae60", linestyle="--", lw=1.5, label=f"Full model = {full_acc:.4f}")
+ax.set_xlabel("5-fold CV Accuracy")
+ax.set_title("Ablation A: Leave-One-Feature-Group-Out\n(negative Δ = that group hurts; positive Δ = group helps)")
+ax.legend(fontsize=9)
+ax.set_xlim(min(loo_means) - 0.05, 1.0)
+plt.tight_layout()
+plt.savefig(OUT_DIR / "04A_feature_group_ablation.png", dpi=180, bbox_inches="tight")
+plt.close()
+print("Saved: 04A_feature_group_ablation.png")
+
+# ── Plot A2: Only one group ────────────────────────────────────────────────────
+only_keys  = [k for k in ablation_a if k.startswith("only")]
+only_means = [ablation_a[k][0] for k in only_keys]
+only_stds  = [ablation_a[k][1] for k in only_keys]
+only_labels = [k.replace("only ", "") for k in only_keys]
+palette = sns.color_palette("tab10", len(only_keys))
+
+fig, ax = plt.subplots(figsize=(9, 4))
+bars = ax.barh(only_labels[::-1], only_means[::-1], color=palette[::-1],
+               capsize=4, edgecolor="white", height=0.55)
+for bar, m in zip(bars, only_means[::-1]):
+    ax.text(m + 0.002, bar.get_y() + bar.get_height()/2,
+            f"{m:.4f}", va="center", fontsize=9)
+ax.axvline(full_acc, color="black", linestyle="--", lw=1.2, label=f"All features = {full_acc:.4f}")
+ax.set_xlabel("5-fold CV Accuracy")
+ax.set_title("Ablation A: Accuracy Using Only One Feature Group")
+ax.legend(fontsize=9)
+plt.tight_layout()
+plt.savefig(OUT_DIR / "04A_only_one_group.png", dpi=180, bbox_inches="tight")
+plt.close()
+print("Saved: 04A_only_one_group.png")
+
+# ── Plot B: Model architecture ────────────────────────────────────────────────
 b_keys  = list(ablation_b.keys())
 b_means = [ablation_b[k][0] for k in b_keys]
 b_stds  = [ablation_b[k][1] for k in b_keys]
-ax.barh(b_keys, b_means, xerr=b_stds, color="mediumpurple", capsize=3)
-ax.set_xlabel("CV Accuracy")
-ax.set_title("B: Model Architecture")
+b_palette = sns.color_palette("Set2", len(b_keys))
 
-# C – n_segments
-ax = axes[1, 0]
+fig, ax = plt.subplots(figsize=(9, 4))
+bars = ax.barh(b_keys[::-1], b_means[::-1], xerr=b_stds[::-1],
+               color=b_palette[::-1], capsize=4, edgecolor="white", height=0.55)
+for bar, m in zip(bars, b_means[::-1]):
+    ax.text(m + 0.002, bar.get_y() + bar.get_height()/2,
+            f"{m:.4f}", va="center", fontsize=9)
+best_b = max(b_means)
+ax.axvline(best_b, color="red", linestyle="--", lw=1.2, label=f"Best = {best_b:.4f}")
+ax.set_xlabel("5-fold CV Accuracy")
+ax.set_title("Ablation B: Model Architecture Comparison\n(same 237-feature input)")
+ax.legend(fontsize=9)
+plt.tight_layout()
+plt.savefig(OUT_DIR / "04B_model_ablation.png", dpi=180, bbox_inches="tight")
+plt.close()
+print("Saved: 04B_model_ablation.png")
+
+# ── Plot C: Number of temporal segments ───────────────────────────────────────
 c_ns    = list(ablation_c.keys())
 c_means = [ablation_c[k][0] for k in c_ns]
 c_stds  = [ablation_c[k][1] for k in c_ns]
-ax.errorbar(c_ns, c_means, yerr=c_stds, marker="o", color="seagreen", capsize=3)
-ax.set_xlabel("Number of segments")
-ax.set_ylabel("CV Accuracy")
-ax.set_title("C: Number of Temporal Segments")
-ax.set_xticks(c_ns)
 
-# D – clipping
-ax = axes[1, 1]
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.fill_between(c_ns, [m - s for m, s in zip(c_means, c_stds)],
+                       [m + s for m, s in zip(c_means, c_stds)],
+                alpha=0.2, color="#2ecc71")
+ax.plot(c_ns, c_means, "o-", color="#2ecc71", lw=2, markersize=8)
+for n, m in zip(c_ns, c_means):
+    ax.text(n, m + 0.003, f"{m:.4f}", ha="center", fontsize=8)
+best_ns = c_ns[np.argmax(c_means)]
+ax.axvline(best_ns, color="red", linestyle="--", lw=1.2, label=f"Best n={best_ns}")
+ax.set_xlabel("Number of temporal segments")
+ax.set_ylabel("5-fold CV Accuracy")
+ax.set_title("Ablation C: Effect of Number of Temporal Segments\n(300s window divided into N equal parts)")
+ax.set_xticks(c_ns)
+ax.legend(fontsize=9)
+plt.tight_layout()
+plt.savefig(OUT_DIR / "04C_segment_ablation.png", dpi=180, bbox_inches="tight")
+plt.close()
+print("Saved: 04C_segment_ablation.png")
+
+# ── Plot D: Clipping threshold ─────────────────────────────────────────────────
 d_keys  = list(ablation_d.keys())
 d_means = [ablation_d[k][0] for k in d_keys]
 d_stds  = [ablation_d[k][1] for k in d_keys]
-ax.bar(d_keys, d_means, yerr=d_stds, color="darkorange", capsize=3)
-ax.set_xlabel("Clipping threshold")
-ax.set_ylabel("CV Accuracy")
-ax.set_title("D: Outlier Clipping Threshold")
-ax.set_xticklabels(d_keys, rotation=30, ha="right")
+best_d = max(d_means)
+
+fig, ax = plt.subplots(figsize=(8, 4))
+bars = ax.bar(d_keys, d_means, yerr=d_stds, color="#e67e22", capsize=4,
+              edgecolor="white")
+for bar, m in zip(bars, d_means):
+    ax.text(bar.get_x() + bar.get_width()/2, m + 0.003,
+            f"{m:.4f}", ha="center", va="bottom", fontsize=9)
+ax.axhline(best_d, color="red", linestyle="--", lw=1.2, label=f"Best = {best_d:.4f}")
+ax.set_xlabel("Clipping threshold (±value)")
+ax.set_ylabel("5-fold CV Accuracy")
+ax.set_title("Ablation D: Effect of Outlier Clipping Threshold")
+ax.set_xticklabels(d_keys, rotation=20, ha="right")
+ax.set_ylim(min(d_means) - 0.05, max(d_means) + 0.04)
+ax.legend(fontsize=9)
+plt.tight_layout()
+plt.savefig(OUT_DIR / "04D_clipping_ablation.png", dpi=180, bbox_inches="tight")
+plt.close()
+print("Saved: 04D_clipping_ablation.png")
+
+# ── Combined 4-panel summary ───────────────────────────────────────────────────
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+fig.suptitle("Ablation Study — All Dimensions", fontsize=14, fontweight="bold")
+
+ax = axes[0, 0]
+ax.barh(loo_keys[::-1], loo_means[::-1], color=bar_colors[::-1], capsize=4, edgecolor="white", height=0.6)
+ax.axvline(full_acc, color="#27ae60", linestyle="--", lw=1.5)
+for i, (m, k) in enumerate(zip(loo_means[::-1], loo_keys[::-1])):
+    ax.text(max(loo_means)*0.5, i, f"{m:.4f}", va="center", fontsize=8, color="white", fontweight="bold")
+ax.set_xlabel("CV Accuracy"); ax.set_title("A: Feature Group LOO")
+
+ax = axes[0, 1]
+ax.barh(b_keys[::-1], b_means[::-1], color=b_palette[::-1], capsize=4, edgecolor="white", height=0.55)
+for i, m in enumerate(b_means[::-1]):
+    ax.text(max(b_means)*0.5, i, f"{m:.4f}", va="center", fontsize=8, color="white", fontweight="bold")
+ax.set_xlabel("CV Accuracy"); ax.set_title("B: Model Architecture")
+
+ax = axes[1, 0]
+ax.fill_between(c_ns, [m-s for m,s in zip(c_means,c_stds)], [m+s for m,s in zip(c_means,c_stds)], alpha=0.2, color="#2ecc71")
+ax.plot(c_ns, c_means, "o-", color="#2ecc71", lw=2, markersize=7)
+ax.set_xlabel("# Segments"); ax.set_ylabel("CV Accuracy"); ax.set_title("C: Temporal Segments"); ax.set_xticks(c_ns)
+
+ax = axes[1, 1]
+ax.bar(d_keys, d_means, color="#e67e22", capsize=4, edgecolor="white")
+ax.set_xlabel("Clip ±threshold"); ax.set_ylabel("CV Accuracy"); ax.set_title("D: Clipping Threshold")
+ax.set_xticklabels(d_keys, rotation=20, ha="right")
 
 plt.tight_layout()
-plt.savefig(OUT_DIR / "04_ablation_study.png", dpi=150)
+plt.savefig(OUT_DIR / "04_ablation_overview.png", dpi=180, bbox_inches="tight")
 plt.close()
+print("Saved: 04_ablation_overview.png")
 
 # ── Save results ───────────────────────────────────────────────────────────────
 rows = []
