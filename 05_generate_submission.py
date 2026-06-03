@@ -8,7 +8,12 @@ import pandas as pd
 import joblib
 from pathlib import Path
 
-BASE_DIR = Path(__file__).parent
+try:
+    import google.colab; IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
+
+BASE_DIR = Path("/content/DataMining_Assignment3") if IN_COLAB else Path(__file__).parent
 OUT_DIR  = BASE_DIR / "outputs"
 
 model    = joblib.load(OUT_DIR / "best_model.pkl")

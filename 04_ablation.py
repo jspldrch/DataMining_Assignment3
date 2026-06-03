@@ -30,7 +30,12 @@ try:
 except ImportError:
     HAS_XGB = False
 
-BASE_DIR  = Path(__file__).parent
+try:
+    import google.colab; IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
+
+BASE_DIR  = Path("/content/DataMining_Assignment3") if IN_COLAB else Path(__file__).parent
 TRAIN_DIR = BASE_DIR / "train" / "train"
 OUT_DIR   = BASE_DIR / "outputs"
 OUT_DIR.mkdir(exist_ok=True)

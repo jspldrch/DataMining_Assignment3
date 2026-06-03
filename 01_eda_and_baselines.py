@@ -21,8 +21,18 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
-BASE_DIR   = Path(__file__).parent
+# ── Paths (auto-detects Google Colab) ─────────────────────────────────────────
+try:
+    import google.colab
+    IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
+
+if IN_COLAB:
+    BASE_DIR = Path("/content/DataMining_Assignment3")
+else:
+    BASE_DIR = Path(__file__).parent
+
 TRAIN_DIR  = BASE_DIR / "train" / "train"
 OUT_DIR    = BASE_DIR / "outputs"
 OUT_DIR.mkdir(exist_ok=True)
