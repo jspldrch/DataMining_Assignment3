@@ -101,10 +101,10 @@ def oversample(X, y, user_ids, targets={2: 700, 4: 500}):
     return (np.vstack(X_aug), np.concatenate(y_aug),
             np.concatenate(u_aug))
 
-print("\nOversampling minority classes …")
-X_tr_os, y_tr_os, users_os = oversample(X_tr, y_tr, users)
-unique_os, counts_os = np.unique(y_tr_os, return_counts=True)
-print(f"  After oversampling: {X_tr_os.shape}")
+# Oversampling disabled — run09 showed it hurts generalization.
+# TTA alone is the new element being tested in run08.
+X_tr_os, y_tr_os, users_os = X_tr, y_tr, users
+print(f"  No oversampling (using original {X_tr_os.shape[0]} windows)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -148,27 +148,77 @@ def xcorr(a, b):
     ca = a-a.mean(1,keepdims=True); cb = b-b.mean(1,keepdims=True)
     return (ca*cb).mean(1)/(ca.std(1)*cb.std(1)+1e-10)
 
+def perm_entropy(s, order=3):
+    """Permutation entropy — measures signal regularity per window."""
+    N, T = s.shape
+    out  = np.zeros(N, dtype=np.float32)
+    for n in range(N):
+        x = s[n]
+        patterns = np.array([np.argsort(x[i:i+order]) for i in range(T-order)])
+        _, cnts = np.unique(patterns, axis=0, return_counts=True)
+        p = cnts / cnts.sum()
+        out[n] = -np.sum(p * np.log2(p + 1e-10))
+    return out
+
+def wavelet_energy(s):
+    """Wavelet energy per decomposition level (3 levels = 6 coeffs per signal)."""
+    try:
+        import pywt
+    except ImportError:
+        return np.zeros((s.shape[0], 6), dtype=np.float32)
+    N, T = s.shape
+    out  = np.zeros((N, 6), dtype=np.float32)
+    for n in range(N):
+        coeffs = pywt.wavedec(s[n], 'db4', level=3)
+        for i, c in enumerate(coeffs):
+            out[n, i] = np.sum(c**2) / len(c)
+    return out
+
+def seg_slopes(s, n_seg=20):
+    """Linear slope within each segment — captures local trends."""
+    N, T = s.shape; sl = T // n_seg
+    t = np.arange(sl, dtype=np.float32) - sl/2
+    denom = (t**2).sum()
+    out = np.zeros((N, n_seg), dtype=np.float32)
+    for i in range(n_seg):
+        w = s[:, i*sl:(i+1)*sl]
+        out[:, i] = (w * t).sum(1) / denom
+    return out
+
+def interseg_var(s, n_seg=10):
+    """Std of segment means — how much does the signal vary across segments."""
+    N, T = s.shape; sl = T // n_seg
+    seg_means = np.stack([s[:, i*sl:(i+1)*sl].mean(1) for i in range(n_seg)], axis=1)
+    return seg_means.std(1)
+
 def extract(X):
     N, T, _ = X.shape
     mx,my,mz = X[:,:,0],X[:,:,1],X[:,:,2]
     sx,sy,sz = X[:,:,3],X[:,:,4],X[:,:,5]
     jx,jy,jz = np.diff(mx,axis=1),np.diff(my,axis=1),np.diff(mz,axis=1)
+    # Second-order jerk (snap): captures sudden movement changes
+    snx,sny,snz = np.diff(jx,axis=1),np.diff(jy,axis=1),np.diff(jz,axis=1)
+
     mag_mean = np.sqrt(mx**2+my**2+mz**2)
     mag_std  = np.sqrt(sx**2+sy**2+sz**2)
     mag_jerk = np.sqrt(jx**2+jy**2+jz**2)
+    mag_snap = np.sqrt(snx**2+sny**2+snz**2)
+
     parts = []
-    for ch in [sx,sy,sz]:           parts += stats9(ch)
+
+    # ── Existing run07 features ───────────────────────────────────────────────
+    for ch in [sx,sy,sz]:              parts += stats9(ch)
     parts += stats9(mag_std)
     parts += stats9(mag_mean)
-    for ch in [jx,jy,jz]:          parts += stats9(ch)
+    for ch in [jx,jy,jz]:             parts += stats9(ch)
     parts += stats9(mag_jerk)
     for sig in [mag_std,mag_jerk]:
-        for ns in [10,20]:          parts += seg(sig, ns)
-    for ch in [sx,sy,sz]:          parts += seg(ch, 10)
-    for ch in [jx,jy,jz]:         parts += seg(ch, 10)
-    for lag in [1,2,5,10,20,30,60]: parts.append(ac(mag_jerk, lag))
+        for ns in [10,20]:             parts += seg(sig, ns)
+    for ch in [sx,sy,sz]:             parts += seg(ch, 10)
+    for ch in [jx,jy,jz]:            parts += seg(ch, 10)
+    for lag in [1,2,5,10,20,30,60]:   parts.append(ac(mag_jerk, lag))
     for ch in [sx,sy,sz]:
-        for lag in [1,5,10,30]:     parts.append(ac(ch, lag))
+        for lag in [1,5,10,30]:        parts.append(ac(ch, lag))
     for sig in [mag_jerk,mag_std,sx,sy,sz]: parts.append(spectral5(sig))
     for a,b in [(jx,jy),(jx,jz),(jy,jz)]:  parts.append(xcorr(a,b))
     for a,b in [(sx,sy),(sx,sz),(sy,sz)]:   parts.append(xcorr(a,b))
@@ -178,6 +228,42 @@ def extract(X):
     for n in range(N):
         pr[n] = len(find_peaks(mag_jerk[n],height=mag_jerk[n].mean())[0])/T
     parts.append(pr)
+
+    # ── NEW: per-user-normalised mean channels (deviation from user baseline) ─
+    # After user normalisation, these encode "how different is this window
+    # from this user's typical position" → activity-specific.
+    for ch in [mx,my,mz]:             parts += stats9(ch)
+
+    # ── NEW: second-order jerk (snap) ────────────────────────────────────────
+    parts += stats9(mag_snap)
+    for ch in [snx,sny,snz]:          parts += stats9(ch)
+
+    # ── NEW: permutation entropy (regularity) ─────────────────────────────────
+    # Low entropy = regular (walking), high = irregular (random motion)
+    for sig in [mag_jerk, mag_std, mx, my, mz]:
+        parts.append(perm_entropy(sig))
+
+    # ── NEW: wavelet energy per level ─────────────────────────────────────────
+    for sig in [mag_jerk, mag_std]:
+        parts.append(wavelet_energy(sig))
+
+    # ── NEW: segment slopes (local trends within each 15s sub-window) ────────
+    for sig in [mag_jerk, mag_std]:
+        parts.append(seg_slopes(sig, n_seg=20))
+
+    # ── NEW: inter-segment variability ────────────────────────────────────────
+    for sig in [mag_jerk, mag_std, sx, sy, sz]:
+        parts.append(interseg_var(sig, n_seg=10))
+
+    # ── NEW: additional autocorrelation lags for mag_std ─────────────────────
+    for lag in [2, 5, 15, 20, 45]:
+        parts.append(ac(mag_std, lag))
+
+    # ── NEW: percentile features ──────────────────────────────────────────────
+    for sig in [mag_jerk, mag_std]:
+        for pct in [10, 25, 75, 90]:
+            parts.append(np.percentile(sig, pct, axis=1))
+
     return np.column_stack([
         np.asarray(p).reshape(N,-1) if np.asarray(p).ndim>1
         else np.asarray(p).reshape(N,1) for p in parts
@@ -185,7 +271,7 @@ def extract(X):
 
 
 print("\nExtracting features …")
-X_tr_feat = extract(X_tr_os)   # oversampled training data
+X_tr_feat = extract(X_tr)
 X_te_feat = extract(X_te)
 print(f"  Train: {X_tr_feat.shape}  Test: {X_te_feat.shape}")
 
@@ -220,11 +306,6 @@ for fold in range(5):
     va_idx = np.where(fold_ids == fold)[0]
     print(f"\nFold {fold+1}/5  train={len(tr_idx)}  val={len(va_idx)}")
 
-    # Oversample only the training fold
-    X_fold, y_fold, _ = oversample(X_tr[tr_idx], y_tr[tr_idx], users[tr_idx])
-    X_fold_feat = extract(X_fold)
-    X_fold_sc   = scaler.transform(X_fold_feat)
-
     probas = []
     for cfg in CONFIGS:
         m = lgb.LGBMClassifier(
@@ -232,7 +313,7 @@ for fold in range(5):
             min_child_samples=20, reg_alpha=0.5, reg_lambda=1.0,
             random_state=42, n_jobs=-1, verbose=-1, **cfg,
         )
-        m.fit(X_fold_sc, y_fold)
+        m.fit(X_tr_orig_sc[tr_idx], y_tr[tr_idx])
         probas.append(m.predict_proba(X_tr_orig_sc[va_idx]))
 
     loo_preds[va_idx] = np.mean(probas, axis=0).argmax(axis=1)
