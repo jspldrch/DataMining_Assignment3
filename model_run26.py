@@ -38,7 +38,7 @@ warnings.filterwarnings('ignore')
 SEED = 42
 np.random.seed(SEED)
 
-OUT_DIR = Path("/kaggle/working") if Path("/kaggle/working").exists() \
+OUT_DIR = Path("/kaggle/working") if Path("/kaggle/input").exists() \
           else Path(__file__).parent / "outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")

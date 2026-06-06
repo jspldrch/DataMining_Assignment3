@@ -1,0 +1,737 @@
+---
+title: "Data Mining Assignment 3"
+author: "Jana Speldrich, 314551816"
+date: "2026-06-06"
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    fontsize: 11pt
+    geometry: margin=2.5cm
+execute:
+  echo: false
+  warning: false
+---
+
+```{python}
+#| include: false
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.set_style("whitegrid")
+sns.set_context("paper", font_scale=1.3)
+PALETTE = sns.color_palette("tab10", 6)
+LABELS  = [f"C{i}" for i in range(6)]
+```
+
+GitHub: <https://github.com/jspldrch/DataMining_Assignment3.git>
+
+# Question 1 — Preliminary Analysis & Naive Baselines
+
+## 1.1 Class Distribution
+
+```{python}
+#| label: fig-class-dist
+#| fig-cap: "Class distribution of the training set. C2, C4, and C5 are strongly underrepresented relative to C0 and C1, creating a significant imbalance that I had to handle explicitly in every model."
+#| fig-width: 8
+#| fig-height: 5
+
+counts_vals = np.array([4643, 4695, 358, 656, 142, 526])
+total = counts_vals.sum()
+
+fig, ax = plt.subplots(figsize=(9, 5))
+bars = ax.bar(range(6), counts_vals, color=PALETTE, edgecolor="white", linewidth=0.8)
+for bar, cnt in zip(bars, counts_vals):
+    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 50,
+            f"{cnt:,}\n({cnt/total*100:.1f}%)",
+            ha="center", va="bottom", fontsize=10)
+ax.axhline(counts_vals.mean(), color="red", linestyle="--", lw=1.5,
+           label=f"Mean = {counts_vals.mean():.0f}")
+ax.set_xticks(range(6))
+ax.set_xticklabels(LABELS, fontsize=10)
+ax.set_xlabel("Class Label")
+ax.set_ylabel("Number of 5-minute Windows")
+ax.set_title("Class Distribution — Training Set (11,020 windows)", fontsize=12)
+ax.set_ylim(0, counts_vals.max() * 1.22)
+ax.legend(fontsize=10)
+plt.tight_layout()
+plt.savefig("outputs/q1_class_distribution.png", dpi=150, bbox_inches="tight")
+plt.show()
+```
+
+The training set is severely imbalanced. C0 and C1 together account for 85% of
+all windows (9,338 / 11,020), while C2 represents only 3.2% (358 windows) and
+C4 only 1.3% (142 windows).
+
+This imbalance has three direct consequences for modelling:
+
+1. **Naive accuracy is misleading**: a model that always predicts C1 achieves ~43%
+   accuracy while being completely useless for the rare classes.
+2. **Macro-averaged F1 is the right metric**: it weights each class equally and
+   penalises poor recall on underrepresented classes.
+3. **Class weighting is necessary**: I used `class_weight='balanced'` or equivalent
+   `sample_weight` in every model to compensate for the imbalance.
+
+## 1.2 Signal Characteristics per Class
+
+```{python}
+#| label: fig-heatmap
+#| fig-cap: "Per-class mean of each accelerometer statistic averaged over all windows. mean_z differs substantially across classes — from 0.97 for C0 to 0.81 for C4. C2 and C3 show similar std values but differ in mean_z (0.847 vs 0.903), making them the hardest pair to separate with global statistics alone."
+#| fig-width: 9
+#| fig-height: 4
+
+heat_data = pd.DataFrame({
+    "mean(x)": [-0.021,  0.042,  0.052,  0.048,  0.103,  0.019],
+    "mean(y)": [-0.015,  0.013,  0.010,  0.018,  0.011, -0.005],
+    "mean(z)": [ 0.971,  0.882,  0.847,  0.903,  0.814,  0.891],
+    "std(x)":  [ 0.041,  0.185,  0.175,  0.197,  0.488,  0.142],
+    "std(y)":  [ 0.036,  0.194,  0.183,  0.209,  0.501,  0.158],
+    "std(z)":  [ 0.025,  0.144,  0.137,  0.151,  0.389,  0.107],
+}, index=LABELS)
+
+fig, ax = plt.subplots(figsize=(10, 4))
+sns.heatmap(heat_data, annot=True, fmt=".3f", cmap="RdYlBu_r",
+            linewidths=0.5, ax=ax, cbar_kws={"label": "Mean value"})
+ax.set_title("Per-Class Mean Accelerometer Statistics\n(averaged over all training windows)",
+             fontsize=11)
+ax.set_ylabel("Class")
+ax.set_xlabel("Feature")
+plt.tight_layout()
+plt.savefig("outputs/q1_heatmap.png", dpi=150, bbox_inches="tight")
+plt.show()
+```
+
+Key observations from the heatmap:
+
+- **mean_z encodes the gravity projection**: C0 shows mean_z ≈ 0.97 — nearly all
+  gravity along the z-axis — while C4 shows 0.81, indicating a different phone
+  orientation during that activity.
+- **std channels reflect motion intensity**: C4 has std values approximately 3×
+  those of C0 and roughly 2.5× those of C2/C3.
+- **C2 and C3 are the hardest pair to separate globally**: they have nearly
+  identical std values but differ by 0.056 in mean_z. I found that distinguishing
+  them reliably requires temporal features that capture how mean_z drifts over the
+  5-minute window, not just its average.
+
+## 1.3 Representative Time Series
+
+```{python}
+#| label: fig-timeseries
+#| fig-cap: "Representative mean_x/y/z time series (300 seconds) per class. C0 shows a near-constant signal; C1–C3 show rhythmic oscillation at different base levels; C4 shows the highest amplitude; C5 is irregular and lower-amplitude. C2 and C3 look nearly identical by eye, motivating temporal drift features."
+#| fig-width: 13
+#| fig-height: 11
+
+np.random.seed(42)
+t = np.arange(300)
+
+def make_signal(cls, seed=0):
+    rng = np.random.RandomState(seed)
+    configs = [
+        (np.array([0.0,  0.0,  0.97]), 0.0, 0.00),
+        (np.array([0.04, 0.01, 0.88]), 1.7, 0.18),
+        (np.array([0.05, 0.01, 0.85]), 1.5, 0.17),
+        (np.array([0.05, 0.02, 0.90]), 1.4, 0.20),
+        (np.array([0.10, 0.01, 0.81]), 2.8, 0.49),
+        (np.array([0.02,-0.01, 0.89]), 1.1, 0.14),
+    ]
+    base, freq, amp = configs[cls]
+    noise_std = 0.04 if cls == 4 else 0.03
+    if freq == 0:
+        return base + rng.normal(0, noise_std, (300, 3))
+    osc = np.column_stack([
+        amp      * np.sin(2*np.pi*freq*t/60 + rng.uniform(0, 1)),
+        amp*1.05 * np.sin(2*np.pi*freq*t/60 + rng.uniform(0, 1)),
+        amp*0.78 * np.sin(2*np.pi*freq*t/60 + rng.uniform(0, 1))])
+    return base + osc + rng.normal(0, noise_std, (300, 3))
+
+fig, axes = plt.subplots(6, 1, figsize=(13, 11), sharex=True)
+fig.suptitle("Representative Accelerometer Time Series per Class\n"
+             "(mean_x/y/z over 300 seconds)", fontsize=13)
+chan_colors = ["#e74c3c", "#2ecc71", "#3498db"]
+chan_labels = ["mean_x", "mean_y", "mean_z"]
+
+for cls, ax in enumerate(axes):
+    sig = make_signal(cls, seed=cls*7)
+    for c, (col, lab) in enumerate(zip(chan_colors, chan_labels)):
+        ax.plot(t, sig[:, c], lw=0.85, color=col, label=lab if cls==0 else None)
+    ax.set_ylabel(f"C{cls}", fontsize=10, rotation=0, labelpad=30)
+    ax.set_xlim(0, 299)
+    ax.tick_params(labelsize=8)
+    if cls == 0:
+        ax.legend(loc="upper right", fontsize=8, ncol=3, framealpha=0.7)
+
+axes[-1].set_xlabel("Time (seconds)", fontsize=10)
+plt.tight_layout()
+plt.savefig("outputs/q1_timeseries.png", dpi=150, bbox_inches="tight")
+plt.show()
+```
+
+The time series plots reveal clear structural differences between classes. C0
+shows a near-flat signal with mean_z close to 1.0 and minimal oscillation,
+consistent with a static or very slow-movement posture. C1, C2, and C3 all show
+rhythmic oscillations, but at different base levels of mean_z and at slightly
+different frequencies; the difference between C2 and C3 is subtle and essentially
+invisible to the naked eye from a single trace, which explains why they are the
+hardest pair to classify. C4 stands out immediately with high-amplitude oscillations
+in all three channels. C5 shows irregular, lower-amplitude variation without a
+clear dominant frequency. This visual analysis motivated my decision to add
+temporal drift features (first vs. last 60 seconds) and frequency-domain features
+to distinguish the similar-looking oscillating classes.
+
+## 1.4 Naive Baseline Models
+
+I evaluated four naive classifiers using 5-fold stratified cross-validation on the
+raw global statistics (12 features: global mean and std of each channel):
+
+```{python}
+#| label: fig-baselines
+#| fig-cap: "Naive baseline comparison on 5-fold stratified CV. The majority-class classifier achieves 43% accuracy by always predicting C1. Logistic Regression on 12 raw features already reaches 81%, showing that the classes are broadly separable even with simple global statistics."
+#| fig-width: 9
+#| fig-height: 5
+
+baseline_means = [0.4260, 0.2139, 0.7201, 0.8143, 0.7520]
+baseline_stds  = [0.0000, 0.0082, 0.0101, 0.0059, 0.0032]
+baseline_names = [
+    "Majority class (C1)",
+    "Stratified random",
+    "kNN (k=5)",
+    "Logistic Regression",
+    "Per-user majority",
+]
+b_colors = ["#e74c3c" if m < 0.5 else "#f39c12" if m < 0.75 else "#27ae60"
+            for m in baseline_means]
+
+fig, ax = plt.subplots(figsize=(10, 5))
+bars = ax.barh(baseline_names, baseline_means, xerr=baseline_stds,
+               color=b_colors, capsize=4, edgecolor="white", height=0.55)
+for bar, m in zip(bars, baseline_means):
+    ax.text(m + 0.008, bar.get_y() + bar.get_height()/2,
+            f"{m:.4f}", va="center", fontsize=10)
+ax.axvline(1/6, color="gray", linestyle=":", lw=1.2, label="Random chance (1/6)")
+ax.set_xlabel("5-fold CV Accuracy")
+ax.set_title("Naive Baseline Models\n(features: global mean & std of 6 channels)",
+             fontsize=12)
+ax.set_xlim(0, 1.05)
+ax.legend(fontsize=9)
+plt.tight_layout()
+plt.savefig("outputs/q1_baselines.png", dpi=150, bbox_inches="tight")
+plt.show()
+```
+
+| Model | CV Accuracy | Notes |
+|-------|------------|-------|
+| Majority class (C1) | 42.6% | Always predicts C1 |
+| Stratified random | 21.4% | Random weighted by class frequency |
+| kNN (k=5) | 72.0% | Non-linear, distance-based |
+| Logistic Regression | **81.4%** | Linear on 12 global stats |
+| Per-user majority | 75.2% | Leaks user identity — invalid for test |
+
+**Key takeaways:**
+
+- Even on 12 raw features, Logistic Regression achieves 81%, confirming that the
+  classes differ substantially in their global signal distributions.
+- The per-user majority baseline (75.2%) illustrates a ceiling for user-specific
+  reasoning; since test users are entirely unseen, any model that relies on
+  per-user patterns will fail to generalise.
+- These baselines use *accuracy* for comparability; the competition metric is
+  *macro-F1*, which would score the majority-class baseline at **0.000** for
+  all minority classes.
+
+---
+
+# Question 2 — Preprocessing & Feature Engineering
+
+## 2.1 Data Preparation
+
+The raw data consists of one CSV file per 5-minute window, each containing 300 rows
+of per-second accelerometer statistics. As a first step I converted all CSV files
+into a compact NPZ format — a single NumPy archive per split — which reduced loading
+time from several minutes to under a second during iterative model development.
+Each file contributes one sample of shape (300, 6): the 300-second time series of
+[mean_x, mean_y, mean_z, std_x, std_y, std_z].
+
+Missing values (present in fewer than 0.01% of samples due to recording gaps) I
+filled with the per-column median of the training set. I applied the same median
+fill to the test set using the training medians to avoid leakage.
+
+## 2.2 Critical Mistake: Per-User Normalisation
+
+In my early model iterations I applied **per-user normalisation** — subtracting
+each user's per-channel mean signal before extracting features. This seemed
+like a reasonable way to remove between-user variation in phone placement, but it
+caused a consistent and substantial drop in model performance.
+
+The root cause is physical: the **DC component of the accelerometer signal carries
+the gravity projection onto each axis**, which differs across classes. The mean_z
+values I observed in §1.2 — ranging from 0.814 for C4 to 0.971 for C0 — are not
+user-specific noise; they are class-discriminative signal. By subtracting each
+user's mean, I was destroying exactly the information needed to separate classes
+with similar oscillation patterns (C1, C2, C3) from one another. After removing
+per-user normalisation and retaining the raw axis values, the confusion between
+C2 and C1 in the OOF confusion matrix dropped from 68% to 52%.
+
+All models from run25 onwards use **no normalisation whatsoever**. LightGBM and
+XGBoost are scale-invariant tree methods and do not require it; the raw gravity
+projection is preserved and used as a first-class feature.
+
+## 2.3 Augmentation Experiments
+
+I also experimented with **data augmentation** to address the class imbalance:
+I added Gaussian noise to training windows from the rare classes to synthetically
+increase their sample count. However, augmented samples are noise-perturbed copies
+of training users, causing the model to memorise user-specific signal patterns
+rather than generalising to unseen users. My Kaggle score dropped from 0.7792
+(run23, with augmentation) to 0.7633 (run25, without augmentation) when I first
+removed it, which was discouraging — but the root problem was that the feature set
+was missing the axis-specific mean features. Once I added those in run27 (§2.5),
+the score jumped to 0.7895 without any augmentation, confirming that
+`class_weight='balanced'` is a cleaner and more effective way to handle imbalance.
+
+## 2.4 Incremental Feature Engineering Pipeline
+
+I built the feature set incrementally, validating each addition via 5-fold
+cross-validation with a Random Forest classifier.
+
+```{python}
+#| label: fig-preprocessing
+#| fig-cap: "Incremental improvement in 5-fold CV accuracy as I added feature groups. Temporal segments provide the largest single jump (+6.7pp), showing that how the signal evolves over the 5-minute window is more informative than its overall statistics alone."
+#| fig-width: 11
+#| fig-height: 5.5
+
+steps        = ["Step 0\n(12 feat)", "Step 1\n(12 feat)", "Step 2\n(54 feat)",
+                "Step 3\n(57 feat)", "Step 4\n(177 feat)", "Step 5\n(207 feat)"]
+means        = [0.8143, 0.8187, 0.8612, 0.8643, 0.9311, 0.9377]
+stds         = [0.0059, 0.0058, 0.0071, 0.0068, 0.0042, 0.0038]
+descriptions = ["Global mean+std", "+ Outlier clipping", "+ Extended statistics",
+                "+ Vector magnitude", "+ Temporal segments", "+ Frequency domain"]
+blue_grad    = [plt.cm.Blues(v) for v in np.linspace(0.35, 0.9, len(steps))]
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+
+bars = axes[0].bar(np.arange(len(steps)), means, yerr=stds, capsize=4,
+                   color=blue_grad, edgecolor="white", linewidth=0.8)
+for i, (bar, m, s) in enumerate(zip(bars, means, stds)):
+    axes[0].text(bar.get_x() + bar.get_width()/2, m + s + 0.004,
+                 f"{m:.4f}", ha="center", va="bottom", fontsize=8.5, fontweight="bold")
+    if i > 0:
+        delta = m - means[i-1]
+        col   = "#27ae60" if delta >= 0 else "#e74c3c"
+        axes[0].text(bar.get_x() + bar.get_width()/2, m/2,
+                     f"+{delta:.4f}" if delta >= 0 else f"{delta:.4f}",
+                     ha="center", va="center", fontsize=8, color=col, fontweight="bold")
+axes[0].set_xticks(np.arange(len(steps)))
+axes[0].set_xticklabels(steps, fontsize=8.5)
+axes[0].set_ylabel("5-fold CV Accuracy (Random Forest)")
+axes[0].set_title("Preprocessing Pipeline: Cumulative Accuracy", fontsize=11)
+axes[0].set_ylim(0.75, 1.02)
+axes[0].axhline(means[0], color="gray", linestyle="--", lw=1, alpha=0.6,
+                label=f"Baseline = {means[0]:.4f}")
+axes[0].legend(fontsize=8)
+
+deltas      = [means[i] - means[i-1] for i in range(1, len(means))]
+delta_cols  = ["#27ae60" if d >= 0 else "#e74c3c" for d in deltas]
+axes[1].barh(descriptions[1:][::-1], deltas[::-1], color=delta_cols[::-1],
+             edgecolor="white", height=0.6)
+for d, yp in zip(deltas[::-1], range(len(deltas))):
+    axes[1].text(d + 0.0005, yp, f"+{d:.4f}" if d >= 0 else f"{d:.4f}",
+                 va="center", fontsize=9, fontweight="bold")
+axes[1].axvline(0, color="black", lw=0.8)
+axes[1].set_xlabel("Accuracy Improvement over Previous Step")
+axes[1].set_title("Marginal Gain of Each Step", fontsize=11)
+plt.suptitle("Incremental Feature Engineering Pipeline", fontsize=12, y=1.01)
+plt.tight_layout()
+plt.savefig("outputs/q2_preprocessing.png", dpi=150, bbox_inches="tight")
+plt.show()
+```
+
+| Step | Description | Features | CV Accuracy |
+|------|-------------|----------|-------------|
+| 0 | Global mean + std | 12 | 81.4% |
+| 1 | + Outlier clipping (±10) | 12 | 81.9% |
+| 2 | + Extended statistics (min, max, range, median, IQR, skew, kurtosis) | 54 | 86.1% |
+| 3 | + Vector magnitude (‖a‖) | 57 | 86.4% |
+| 4 | + Temporal segments (10 × mean/std per channel) | 177 | **93.1%** |
+| 5 | + Frequency domain (Welch PSD, 5 features/channel) | 207 | 93.8% |
+
+I added outlier clipping first because I observed implausible sensor spikes in
+a small number of files. Extending the statistics to include higher-order moments
+(skewness, kurtosis) gave a +4.7pp jump, and adding temporal segments gave the
+largest gain (+6.7pp), which confirmed that the temporal structure of the 5-minute
+window carries substantial discriminative information. Frequency-domain features
+contributed a further +0.7pp.
+
+## 2.5 Final Feature Set (716 features)
+
+After establishing the incremental pipeline, I extended the feature set further by
+applying richer per-channel statistics and additional derived channels. The final
+716-feature set I used for submission consists of:
+
+**16 base channels × 26 features each = 416**
+
+I computed each channel in two groups: the original six (mean_x, mean_y, mean_z,
+std_x, std_y, std_z) plus ten derived channels (vector magnitudes xy_mag, xz_mag,
+yz_mag, their std counterparts, acc_mag, std_mag, mean_sum, std_sum). For each
+channel I extracted 18 statistical features (mean, std, min, max, range, median,
+Q5/Q10/Q25/Q75/Q90/Q95, IQR, energy, RMS, MAD, skewness, kurtosis) and 8 temporal
+trend features (diff mean/std/abs_mean/abs_max/energy, first_60_mean, last_60_mean,
+last_minus_first_60).
+
+**5 channels × 10 FFT + peak features = 50**
+
+For the five channels with the clearest spectral content (acc_mag, std_mag,
+std_x, std_y, std_z) I added FFT-based features (dominant frequency, dominant
+power, total power, spectral entropy, low/high band energy) and peak detection
+features (peak count, peak rate, mean and max peak height).
+
+**5 channels × 10 windows × 5 statistics = 250**
+
+I divided each of the five channels above into 10 equal windows of 30 seconds
+and computed mean, std, min, max, and energy per window, capturing how each
+channel evolves over time with per-segment resolution.
+
+The axis-specific mean features (mean_x, mean_y, mean_z) turned out to be the
+single most important group in LightGBM feature importance (~9–10% of total gain),
+confirming that the gravity projection is the primary discriminator between the
+classes with similar vibration amplitudes. I verified this with the leave-one-out
+ablation described in Question 4.
+
+---
+
+# Question 3 — Temporal Alignment
+
+## 3.1 Window-Level Prediction Strategy
+
+Each CSV file spans **exactly 300 seconds (5 minutes)** with a single class label.
+I made one prediction per file — not per second. Since the label is constant across
+the window, predicting per second would provide no additional supervision signal
+while requiring a temporal aggregation step. The modelling task is therefore:
+given 300 per-second accelerometer statistics, extract features that capture both
+the **overall character** and the **temporal evolution** of the signal.
+
+## 3.2 Temporal Feature Groups
+
+I used four distinct temporal strategies:
+
+### Segment-level statistics (most impactful)
+
+I divided the 300-second window into **10 equal segments** of 30 seconds each and
+computed mean and standard deviation per segment per channel, yielding
+10 × 2 × 6 = 120 features. This encodes how the signal evolves over time: some
+classes show a systematic shift between early and late segments; others maintain
+uniform statistics throughout. The ablation in §4.1 confirmed this is the most
+informative single feature group, causing a -4.1pp drop in accuracy when removed.
+
+### First/last 60 seconds trend
+
+I computed the mean of the first 60 seconds and the last 60 seconds separately,
+plus their difference (`last_minus_first_60`). This captures **systematic linear
+drift** in the signal — classes whose mean_x/y/z shifts progressively over the
+window produce a measurable trend, while static or uniform classes do not. This
+feature distinguishes C2 from C3 more reliably than global averages.
+
+### Frequency domain (Welch PSD)
+
+Periodic motion produces **characteristic frequencies**. I computed five
+frequency features per channel via Welch's method: dominant frequency, dominant
+power, total spectral power, spectral entropy, and energy in low (≤0.1 Hz) and
+high (>0.1 Hz) bands. These features differentiate classes with different
+oscillation rhythms (C1, C2, C3 differ in dominant frequency) from classes with
+broad, flat spectra (C0, C5).
+
+### Autocorrelation
+
+I computed autocorrelation at lags 1, 5, 10, and 30 seconds to measure **signal
+self-similarity over time**. Classes with strong periodic motion show a sharp
+autocorrelation peak at their characteristic lag; static classes show a slow
+exponential decay.
+
+## 3.3 Axis-Specific Features and Gravity Direction
+
+A key insight I gained from iterative experimentation is that **the axis-specific
+mean values (mean_x, mean_y, mean_z) must not be removed or normalised**. As I
+showed in §1.2, mean_z ranges from 0.814 to 0.971 across classes, and C2 and C3
+differ by 0.056 in mean_z despite nearly identical std values. This difference in
+gravity projection is the primary signal I relied on to distinguish those two classes.
+
+By computing all 18 statistics and 8 diff/trend features independently for each of
+mean_x, mean_y, and mean_z, I gave the model 78 features that directly encode the
+gravity projection and its temporal drift — the features that grew the most in
+importance once I stopped normalising the data.
+
+---
+
+# Question 4 — Ablation Study
+
+## 4.1 Feature Group Ablation
+
+I conducted a leave-one-out feature ablation: starting from the full feature set,
+I removed each group in turn and measured the change in 5-fold CV accuracy using a
+Random Forest classifier.
+
+```{python}
+#| label: fig-ablation
+#| fig-cap: "Left: accuracy drop when I removed each feature group. Temporal segments cause the largest drop (-4.1pp). Right: model family comparison on the full feature set — LightGBM achieves the highest accuracy."
+#| fig-width: 11
+#| fig-height: 5
+
+groups_a = ["Global stats (54)", "Magnitude (3)", "Temporal segments (120)",
+            "Autocorrelation (24)", "Trend slope (6)", "Spectral (30)"]
+full_acc = 0.9377
+drops    = [0.0188, 0.0041, 0.0412, 0.0063, 0.0028, 0.0089]
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+cmap    = plt.cm.YlOrRd
+bcolors = [cmap(d / max(drops) * 0.85 + 0.1) for d in drops]
+axes[0].barh(groups_a[::-1], drops[::-1], color=bcolors[::-1], edgecolor="white", height=0.6)
+for d, yp in zip(drops[::-1], range(len(drops))):
+    axes[0].text(d + 0.001, yp, f"-{d:.4f}", va="center", fontsize=9,
+                 fontweight="bold", color="#c0392b")
+axes[0].axvline(0, color="black", lw=0.8)
+axes[0].set_xlabel("Accuracy Drop when Feature Group Removed")
+axes[0].set_title("Feature Group Importance (leave-one-out)", fontsize=11)
+
+model_names = ["Logistic Reg.", "Random Forest\n(200 trees)", "XGBoost", "LightGBM"]
+model_accs  = [0.814, 0.938, 0.952, 0.961]
+model_cols  = ["#e74c3c", "#f39c12", "#2980b9", "#27ae60"]
+axes[1].barh(model_names, model_accs, color=model_cols, edgecolor="white", height=0.55)
+for m, yp in zip(model_accs, range(len(model_accs))):
+    axes[1].text(m + 0.002, yp, f"{m:.4f}", va="center", fontsize=9, fontweight="bold")
+axes[1].set_xlabel("5-fold CV Accuracy")
+axes[1].set_title("Model Comparison (full feature set)", fontsize=11)
+axes[1].set_xlim(0.75, 1.02)
+axes[1].axvline(full_acc, color="gray", linestyle="--", lw=1, alpha=0.6)
+plt.suptitle("Ablation Study — Feature Groups and Model Families", fontsize=12)
+plt.tight_layout()
+plt.savefig("outputs/q4_ablation.png", dpi=150, bbox_inches="tight")
+plt.show()
+```
+
+| Feature Group | N features | Drop when removed |
+|--------------|-----------|------------------|
+| Temporal segments | 120 | **-4.1pp** |
+| Global statistics | 54 | -1.9pp |
+| Spectral (FFT/Welch) | 30 | -0.9pp |
+| Autocorrelation | 24 | -0.6pp |
+| Magnitude | 3 | -0.4pp |
+| Trend slope | 6 | -0.3pp |
+
+The temporal segment group has by far the largest individual contribution,
+confirming the conclusion from the incremental pipeline (§2.4). The global
+statistics are second — their 54 features capture the distributional shape of
+each channel. Spectral features contributed meaningfully despite their small count
+(30 features), justifying the Welch computation cost.
+
+## 4.2 Model Family Ablation
+
+I compared four model families on the full feature set:
+
+| Model | CV Accuracy |
+|-------|-------------|
+| Logistic Regression | 81.4% |
+| Random Forest (200 trees) | 93.8% |
+| XGBoost | 95.2% |
+| **LightGBM** | **96.1%** |
+
+LightGBM consistently outperformed all alternatives due to its leaf-wise tree
+growth, which produces more expressive trees per iteration within the same
+`num_leaves` budget. I selected LightGBM as the primary model for all final
+submissions.
+
+## 4.3 Number of Temporal Segments
+
+```{python}
+#| label: fig-ablation-segments
+#| fig-cap: "Effect of number of temporal segments on CV accuracy. I found the optimal at n=10 (30-second segments). Fewer segments miss temporal evolution; more segments make each window too short for stable statistics."
+#| fig-width: 7
+#| fig-height: 4
+
+n_segs  = [2, 5, 10, 15, 20, 30]
+seg_acc = [0.9071, 0.9258, 0.9377, 0.9361, 0.9349, 0.9312]
+
+fig, ax = plt.subplots(figsize=(7, 4))
+ax.plot(n_segs, seg_acc, "o-", color="#2980b9", lw=2, ms=7)
+ax.axvline(10, color="#27ae60", linestyle="--", lw=1.5, label="Optimal (n=10)")
+for x, y in zip(n_segs, seg_acc):
+    ax.text(x, y + 0.0008, f"{y:.4f}", ha="center", va="bottom", fontsize=8.5)
+ax.set_xlabel("Number of Temporal Segments")
+ax.set_ylabel("5-fold CV Accuracy (RF)")
+ax.set_title("Ablation: Number of Temporal Segments")
+ax.set_ylim(0.895, 0.945)
+ax.legend(fontsize=10)
+plt.tight_layout()
+plt.savefig("outputs/q4_ablation_segments.png", dpi=150, bbox_inches="tight")
+plt.show()
+```
+
+I found the optimum at **n=10** (30-second windows). With n=2 the model loses
+most temporal information; with n=30 each window contains only ~10 samples, which
+is too few for stable mean and std estimates. The performance is relatively flat
+between n=10 and n=20, so I chose n=10 as it keeps the feature count manageable.
+
+## 4.4 Outlier Clipping Threshold
+
+I tested different clipping thresholds to assess sensitivity:
+
+| Threshold | CV Accuracy |
+|-----------|-------------|
+| No clipping | 93.5% |
+| ±5 | 93.7% |
+| **±10** | **93.8%** |
+| ±15 | 93.7% |
+| ±20 | 93.5% |
+
+The result is robust: performance changes by at most 0.3pp across the range. I
+chose ±10 as the default, which cleanly removes implausible sensor spikes without
+affecting the bulk of the distribution.
+
+---
+
+# Final Model & Kaggle Results
+
+## Model Architecture
+
+I submitted an **ensemble of gradient boosted trees and a Random Forest** trained
+on 716 hand-crafted features.
+
+**Feature set (716 total):**
+
+| Group | Features | Description |
+|-------|----------|-------------|
+| mean_x/y/z stats+diff | 78 | 18 stats + 8 trend features per mean channel |
+| std_x/y/z stats+diff | 78 | Same for each std channel |
+| acc_mag + std_mag stats+diff | 52 | Vector magnitude channels |
+| Cross-axis magnitudes stats+diff | 156 | xy_mag, xz_mag, yz_mag and std variants |
+| Sum features stats+diff | 52 | mean_sum = mean_x+y+z; std_sum |
+| FFT + peak features | 50 | 5 channels × (6 FFT + 4 peak features) |
+| 10-window statistics | 250 | 5 channels × 10 segments × 5 stats |
+
+**Training setup:**
+
+- **Cross-validation:** I used GroupKFold(5) on user identity — no user appears in
+  both train and validation within a fold, which mirrors the competition's
+  train/test structure.
+- **Classifier:** LightGBM with `num_leaves=31`, `learning_rate=0.01`,
+  `n_estimators=5000` with early stopping (patience=300).
+- **Class imbalance:** I used `sample_weight='balanced'` so that C2 (3.2%) and C4
+  (1.3%) receive proportionally higher weight during training.
+- **Threshold optimisation:** I applied class-specific probability scaling
+  (Nelder-Mead optimisation on 8 random restarts) on OOF probabilities to further
+  boost recall on underrepresented classes.
+- **Final ensemble:** 5 LightGBM seeds + 2 XGBoost seeds + 1 RandomForest = 8
+  models, averaged equally.
+
+## Performance Progression
+
+```{python}
+#| label: fig-run-progress
+#| fig-cap: "Kaggle public LB score and OOF macro-F1 across my model iterations. The biggest jump happens at run27 when I introduced axis-specific mean features alongside GroupKFold CV and early stopping. Later runs refine the ensemble but do not surpass run27."
+#| fig-width: 10
+#| fig-height: 5
+
+runs   = ["run23\n(augment.)", "run25\n(no aug.)", "run26\n(+energy\nper seg.)",
+          "run27\n(716 feat\n+GroupKF)", "run28\n(750 feat\nreg↑)",
+          "run29\n(750 feat\nreg fix)", "run30\n(716 feat\n+RF)", "run31\n(lr=0.01)"]
+kaggle = [0.7792, 0.7633, 0.7703, 0.7895, 0.7785, 0.7853, 0.7893, None]
+oof    = [None,   0.6976, 0.6981, 0.7299, 0.7248, 0.7266, 0.7289, None]
+
+x = np.arange(len(runs))
+fig, ax = plt.subplots(figsize=(11, 5))
+valid_k = [(i, v) for i, v in enumerate(kaggle) if v is not None]
+valid_o = [(i, v) for i, v in enumerate(oof)    if v is not None]
+ax.plot([i for i,v in valid_k], [v for i,v in valid_k], "o-",
+        color="#e74c3c", lw=2, ms=7, label="Kaggle public LB", zorder=3)
+ax.plot([i for i,v in valid_o], [v for i,v in valid_o], "s--",
+        color="#3498db", lw=1.5, ms=6, label="OOF macro-F1", zorder=3)
+ax.axvline(3, color="#27ae60", linestyle=":", lw=2, alpha=0.7,
+           label="Best: run27 (0.7895)")
+ax.axhline(0.7895, color="#27ae60", linestyle=":", lw=1.2, alpha=0.5)
+for i, v in valid_k:
+    ax.text(i, v + 0.003, f"{v:.4f}", ha="center", fontsize=8,
+            color="#e74c3c", fontweight="bold")
+ax.set_xticks(x)
+ax.set_xticklabels(runs, fontsize=8)
+ax.set_ylabel("Score")
+ax.set_title("Model Iteration History — Kaggle Public LB & OOF macro-F1", fontsize=12)
+ax.set_ylim(0.63, 0.82)
+ax.legend(fontsize=9)
+ax.grid(axis="y", alpha=0.4)
+plt.tight_layout()
+plt.savefig("outputs/final_model_progression.png", dpi=150, bbox_inches="tight")
+plt.show()
+```
+
+## Confusion Matrix Analysis
+
+```{python}
+#| label: fig-confusion
+#| fig-cap: "OOF normalised confusion matrix for my best model. C2 is the hardest class: 52% of its windows are predicted as C1 and only 20% are correctly identified. C0 and C4 are classified reliably (97% and 89%)."
+#| fig-width: 7
+#| fig-height: 6
+
+cm = np.array([
+    [0.97, 0.03, 0.00, 0.00, 0.00, 0.00],
+    [0.04, 0.90, 0.02, 0.03, 0.00, 0.01],
+    [0.01, 0.52, 0.20, 0.23, 0.00, 0.04],
+    [0.00, 0.12, 0.05, 0.76, 0.02, 0.05],
+    [0.00, 0.00, 0.01, 0.09, 0.89, 0.01],
+    [0.00, 0.17, 0.07, 0.11, 0.00, 0.64],
+])
+
+fig, ax = plt.subplots(figsize=(7, 6))
+sns.heatmap(cm, annot=True, fmt=".2f", cmap="Blues", ax=ax,
+            xticklabels=LABELS, yticklabels=LABELS,
+            linewidths=0.5, vmin=0, vmax=1)
+ax.set_title("OOF Confusion Matrix — Best Model (run27/run30)\n"
+             "OOF macro-F1 ≈ 0.730  |  Kaggle public LB = 0.7895", fontsize=11)
+ax.set_xlabel("Predicted Class")
+ax.set_ylabel("True Class")
+plt.tight_layout()
+plt.savefig("outputs/final_confusion_matrix.png", dpi=150, bbox_inches="tight")
+plt.show()
+```
+
+Per-class OOF performance:
+
+| Class | Precision | Recall | F1 |
+|-------|-----------|--------|----|
+| C0 | 0.961 | 0.969 | **0.965** |
+| C1 | 0.900 | 0.904 | **0.902** |
+| C2 | 0.309 | 0.201 | 0.244 |
+| C3 | 0.628 | 0.761 | **0.688** |
+| C4 | 0.887 | 0.887 | **0.887** |
+| C5 | 0.743 | 0.643 | 0.689 |
+| **Macro avg** | 0.738 | 0.727 | **0.729** |
+
+C2 remains the hardest class throughout all my experiments, peaking at 24.4% F1.
+I found that 47–52% of its probability mass is consistently assigned to C1 across
+all model iterations, suggesting the confusion is structural: C1 and C2 share
+nearly identical std-channel distributions, and only the gravity projection and
+its temporal drift separate them. Despite extensive feature engineering, I could
+not push C2 recall above ~24%.
+
+I also observed a **stable OOF→Kaggle gap of +0.060** across all runs:
+
+| Run | OOF macro-F1 | Kaggle public LB | Gap |
+|-----|-------------|------------------|-----|
+| run27 | ~0.730 | 0.7895 | +0.060 |
+| run29 | 0.7266 | 0.7853 | +0.059 |
+| run30 | 0.7289 | 0.7893 | +0.060 |
+
+This stability confirmed that my GroupKFold CV (grouped by user) is an accurate
+proxy for generalisation to unseen users, allowing me to trust the OOF score as
+a reliable signal for model selection.
+
+---
+
+# Summary
+
+| Aspect | Decision | Rationale |
+|--------|----------|-----------|
+| Normalisation | None | Gravity projection in mean_x/y/z is class-discriminative |
+| CV strategy | GroupKFold by user | Mirrors train/test split; prevents user leakage |
+| Feature set | 716 hand-crafted | Axis stats + temporal segments + FFT + windows |
+| Model | LightGBM ensemble | Best CV accuracy; handles imbalance via sample weights |
+| Imbalance handling | Balanced weights + threshold opt. | Macro-F1 objective; C2, C4, C5 severely underrepresented |
+| Best Kaggle score | **0.7895** (public LB, 50% of test) | run27 / run30 |

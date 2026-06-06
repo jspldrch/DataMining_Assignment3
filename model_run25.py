@@ -41,7 +41,7 @@ warnings.filterwarnings('ignore')
 SEED = 42
 np.random.seed(SEED)
 
-OUT_DIR = Path("/kaggle/working") if Path("/kaggle/working").exists() \
+OUT_DIR = Path("/kaggle/working") if Path("/kaggle/input").exists() \
           else Path(__file__).parent / "outputs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
@@ -192,8 +192,8 @@ def extract(X):
 print("\nExtracting features...")
 X_tr_feat = extract(X_tr)
 X_te_feat = extract(X_te)
-assert X_tr_feat.shape[1] == 391, f"Expected 391, got {X_tr_feat.shape[1]}"
-print(f"  Features: {X_tr_feat.shape[1]}  (run23 feature set, no augmentation applied)")
+assert X_tr_feat.shape[1] == 382, f"Expected 382, got {X_tr_feat.shape[1]}"
+print(f"  Features: {X_tr_feat.shape[1]}  (run23 feature set: 373 - 9 mag_mean + 18 trend)")
 
 scaler   = StandardScaler()
 X_tr_sc  = scaler.fit_transform(X_tr_feat)
