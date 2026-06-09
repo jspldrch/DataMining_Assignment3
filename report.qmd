@@ -34,7 +34,7 @@ GitHub: <https://github.com/jspldrch/DataMining_Assignment3.git>
 
 ```{python}
 #| label: fig-class-dist
-#| fig-cap: "Class distribution of the training set. C2, C4, and C5 are strongly underrepresented relative to C0 and C1, creating a significant imbalance that I had to handle explicitly in every model."
+#| fig-cap: "Class distribution of the training set."
 #| fig-width: 8
 #| fig-height: 5
 
@@ -62,17 +62,17 @@ plt.show()
 ```
 
 The training set is severely imbalanced. C0 and C1 together account for 85% of
-all windows (9,338 / 11,020), while C2 represents only 3.2% (358 windows) and
+all windows, while C2 represents only 3.2% (358 windows) and
 C4 only 1.3% (142 windows).
 
 This imbalance has three direct consequences for modelling:
 
-1. **Naive accuracy is misleading**: a model that always predicts C1 achieves ~43%
+1. Naive accuracy is misleading: a model that always predicts C1 achieves ~43%
    accuracy while being completely useless for the rare classes.
-2. **Macro-averaged F1 is the right metric**: it weights each class equally and
+2. Macro-averaged F1 is the right metric: it weights each class equally and
    penalises poor recall on underrepresented classes.
-3. **Class weighting is necessary**: I used `class_weight='balanced'` or equivalent
-   `sample_weight` in every model to compensate for the imbalance.
+3. Class weighting is necessary: I used `class_weight='balanced'` or equivalent
+   `sample_weight` in some models to compensate for the imbalance.
 
 ## 1.2 Signal Characteristics per Class
 
@@ -105,15 +105,13 @@ plt.show()
 
 Key observations from the heatmap:
 
-- **mean_z encodes the gravity projection**: C0 shows mean_z ≈ 0.97 — nearly all
+- mean_z encodes the gravity projection: C0 shows mean_z ≈ 0.97 — nearly all
   gravity along the z-axis — while C4 shows 0.81, indicating a different phone
   orientation during that activity.
-- **std channels reflect motion intensity**: C4 has std values approximately 3×
+- std channels reflect motion intensity: C4 has std values approximately 3×
   those of C0 and roughly 2.5× those of C2/C3.
-- **C2 and C3 are the hardest pair to separate globally**: they have nearly
-  identical std values but differ by 0.056 in mean_z. I found that distinguishing
-  them reliably requires temporal features that capture how mean_z drifts over the
-  5-minute window, not just its average.
+- C2 and C3 are the hardest pair to separate globally: they have nearly
+  identical std values but differ by 0.056 in mean_z. This indicates that distinguishing them requires additional features. 
 
 ## 1.3 Representative Time Series
 
@@ -172,9 +170,9 @@ The time series plots reveal clear structural differences between classes. C0
 shows a near-flat signal with mean_z close to 1.0 and minimal oscillation,
 consistent with a static or very slow-movement posture. C1, C2, and C3 all show
 rhythmic oscillations, but at different base levels of mean_z and at slightly
-different frequencies; the difference between C2 and C3 is subtle and essentially
-invisible to the naked eye from a single trace, which explains why they are the
-hardest pair to classify. C4 stands out immediately with high-amplitude oscillations
+different frequencies. The difference between C2 and C3 is subtle and essentially
+invisible from a single trace, which explains why they are the
+hardest pair to classify. C4 shows a high-amplitude oscillations
 in all three channels. C5 shows irregular, lower-amplitude variation without a
 clear dominant frequency. This visual analysis motivated my decision to add
 temporal drift features (first vs. last 60 seconds) and frequency-domain features
@@ -226,11 +224,11 @@ plt.show()
 | Stratified random | 21.4% | Random weighted by class frequency |
 | kNN (k=5) | 72.0% | Non-linear, distance-based |
 | Logistic Regression | **81.4%** | Linear on 12 global stats |
-| Per-user majority | 75.2% | Leaks user identity — invalid for test |
+| Per-user majority | 75.2% | Leaks user identity (invalid for test) |
 
-**Key takeaways:**
+**Learnings:**
 
-- Even on 12 raw features, Logistic Regression achieves 81%, confirming that the
+- Even on 12 raw features, Logistic Regression achieves 81%, confirming that most of the 
   classes differ substantially in their global signal distributions.
 - The per-user majority baseline (75.2%) illustrates a ceiling for user-specific
   reasoning; since test users are entirely unseen, any model that relies on

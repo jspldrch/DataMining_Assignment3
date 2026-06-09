@@ -1,6 +1,5 @@
 """
-Assignment 3 – Step 1: Preliminary Analysis & Naive Baselines
-Addresses grading question 1 (10%).
+Assignment 3 – Step 1: Preliminary Analysis & Naive Baselines.
 """
 
 import numpy as np

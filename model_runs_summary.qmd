@@ -1,0 +1,230 @@
+---
+title: "HAR Kaggle Competition — Model Run Summary"
+author: "Jana Speldrich"
+format:
+  pdf:
+    documentclass: article
+    geometry: margin=1.5cm
+    fontsize: 9pt
+    papersize: a4
+execute:
+  echo: false
+---
+
+# Overview
+
+This document summarises every model run submitted to the HAR Kaggle competition (macro F1 metric, 6-class activity recognition). Each run was evaluated with **Leave-One-User-Out (LOUO) cross-validation** on 60 training users (5 folds, 12 users each, round-robin assignment), and the best models were submitted to Kaggle.
+
+**Data:** Each sample is a 300-timestep window with 6 channels: `mean_x`, `mean_y`, `mean_z`, `std_x`, `std_y`, `std_z`. Classes: 0 = sit/stand, 1 = walk flat, 2 = walk down, 3 = walk up, 4 = running, 5 = other.
+
+**Key tension:** The mean channels contain the gravity component, which depends on phone orientation per user. Per-user normalization removes this but also removes the gravity direction signal that distinguishes upstairs from downstairs.
+
+---
+
+# Feature Group Abbreviations
+
+The following shorthand is used in the table below. All statistics (stats9) compute: mean, std, min, max, range, median, IQR, skewness, kurtosis.
+
+| Abbreviation | Description | Count |
+|---|---|---:|
+| `std_ch` | stats9 of std_x, std_y, std_z | 27 |
+| `mag_std` | stats9 of \|std\| = √(sx²+sy²+sz²) | 9 |
+| `mag_mean` | stats9 of \|mean\| = √(mx²+my²+mz²) | 9 |
+| `jerk_ch` | stats9 of jerk_x,y,z (=diff of mean channels) | 27 |
+| `mag_jerk` | stats9 of \|jerk\| | 9 |
+| `seg_mag` | temporal segments (10+20) of mag_std, mag_jerk | 120 |
+| `seg_std_ch` | 10 segments (mean+std each) of sx, sy, sz | 60 |
+| `seg_jerk_ch` | 10 segments of jx, jy, jz | 60 |
+| `ac_jerk` | autocorr of mag_jerk at 7 lags (1,2,5,10,20,30,60) | 7 |
+| `ac_std_ch` | autocorr of sx, sy, sz at 4 lags each | 12 |
+| `spectral` | FFT features (dom freq, entropy, low/mid/high power) for mag_jerk, mag_std, sx, sy, sz | 25 |
+| `xcorr` | cross-correlations between jerk pairs and std pairs | 6 |
+| `zerocross` | zero-crossing rate of mag_jerk | 1 |
+| `peaks` | peak rate of mag_jerk | 1 |
+| `user_ctx` | z-score deviation of window stats vs user's own mean | 45 |
+| `sma` | signal magnitude area (L1 norm) for mean, std, jerk channels | 27 |
+| `jerk_asym` | mean of positive / negative values of jx, jy, jz | 6 |
+| `trend` | first\_60\_mean, last\_60\_mean, last−first per channel (6 ch) | 18 |
+| `axis_stat` | stats18 + diff8 per axis channel (mean\_x/y/z, std\_x/y/z) | 156 |
+| `acc_mag` | stats18 + diff8 for acc\_mag, std\_mag | 52 |
+| `cross_mag` | stats18 + diff8 for xy/xz/yz\_mag and std variants | 156 |
+| `sum_feat` | stats18 + diff8 for mean\_sum, std\_sum | 52 |
+| `fft_peak_5ch` | FFT (6) + peak (4) features for acc\_mag, std\_mag, std\_x/y/z | 50 |
+| `win_10×5ch` | 10 windows × 5 stats (mean,std,min,max,energy) for 5 channels | 250 |
+| `tilt` | tilt angle stats over window | 6 |
+| `covcorr` | pairwise covariance + correlation of mean\_x/y/z | 6 |
+| `mean_xyz_fft` | FFT features of mean\_x, mean\_y, mean\_z | 18 |
+| `step_rhythm` | inter-peak interval stats of std\_mag time series | 4 |
+
+The **core 373-feature set** (used run07–run22) = `std_ch` + `mag_std` + `mag_mean` + `jerk_ch` + `mag_jerk` + `seg_mag` + `seg_std_ch` + `seg_jerk_ch` + `ac_jerk` + `ac_std_ch` + `spectral` + `xcorr` + `zerocross` + `peaks` = **373**.
+
+---
+
+# Run Summary Table
+
+The table is split into two parts — Part A covers scores, environment and model setup; Part B covers features.
+
+## Part A — Scores, Environment, and Model Setup
+
+```{=latex}
+\footnotesize
+```
+
+| Run | Kaggle F1 | Environment | # Feat | Norm | CV | Augmentation | Ensemble |
+|---|---:|---|---:|---|---|---|---|
+| **Baseline A** | 0.7531 | Kaggle | ~100 | Window | — | No | 1 LGB |
+| **Baseline B** | 0.7366 | Kaggle | ~100 | Window | — | No | 1 LGB |
+| **run03** | — | Local→Kaggle¹ | ~216 | Window | LOUO 5f | No | CNN + 1 LGB |
+| **run04** | 0.7042 | Kaggle² | ~216 | Window | LOUO 5f | No | CNN + 1 LGB |
+| **run05** | 0.7337 | Kaggle³ | ~1132 | Window ×2 | LOUO 5f | No | 10 LGB |
+| **run06** | 0.7501 | Kaggle³ | 373 | None | LOUO 5f | No | 4 LGB configs |
+| **run07** | **0.7707** | Kaggle³ | 373 | Per-user | LOUO 5f | No | 3 LGB configs |
+| **run07imp** | 0.7519 | Local | 150–200 | Per-user | Local | No | 15 LGB |
+| **run08** | 0.7559 | Kaggle³ | 373 | Per-user | LOUO 5f | TTA + noise (C2,C4) | LGB |
+| **run08(1)** | 0.7524 | Kaggle³ | 373 | Per-user | Strat. 5f | SMOTE | LGB |
+| **run12** | 0.7295 | Kaggle³ | ~150 | Per-user | LOUO 5f | No | TCN+Transf.+LGB |
+| **run15** | 0.7565 | Local (CSV) | 50 | Per-user | Local | No | 15 LGB |
+| **run17** | 0.7400 | Kaggle⁴ | ~428 | Per-user | LOUO 5f | No | 30 LGB + thresh. opt |
+| **run18** | **0.7738** | Kaggle⁴ | 418 | Per-user | LOUO 5f | Noise C2,C4,C5 | 15 LGB + 9 XGB + thresh. opt |
+| **run19** | 0.7392 | Kaggle⁴ | ~364 | Per-user | LOUO 5f | Yes | 15 LGB + 9 XGB + thresh. opt |
+| **run19\_2s** | 0.5342 | Local | 373 | Per-user | Local | No | 2-stage LGB |
+| **run20** | 0.7593 | Kaggle⁴ | 445 | Per-user | LOUO 5f | Noise C2,C4,C5 | 15 LGB + 9 XGB + 5 RF + thresh. opt |
+| **run21** | — | Local | — | — | — | — | Diagnostic only |
+| **run22** | 0.7691 | Kaggle⁴ | 424 | Per-user | LOUO 5f | Noise C2,C4,C5 | 15 LGB + 9 XGB + thresh. opt |
+| **run23** | **0.7792** | Kaggle⁴ | 382 | **None** | LOUO 5f | Noise C2×5,C4×5,C5×2,C3×1 | 15 LGB + 9 XGB + thresh. opt |
+| **run24** | 0.7618 | Kaggle⁴ | ~417 | None | LOUO 5f | Noise (same as run23) | 15 LGB + 9 XGB + thresh. opt |
+| **run25** | 0.7633 | Local+Kaggle⁵ | 382 | None | LOUO 5f | **No** | 5 LGB + 2 XGB + thresh. opt |
+| **run26** | 0.7703 | Local+Kaggle⁵ | 412 | None | LOUO 5f | No | 5 LGB + 2 XGB + thresh. opt |
+| **run27** | **0.7895** | Local+Kaggle⁵ | 716 | **None** | LOUO 5f | No | 5 LGB + 2 XGB + thresh. opt |
+| **run28** | 0.7785 | Local+Kaggle⁵ | 750 | None | LOUO 5f | No | 5 LGB + 2 XGB + 1 RF + thresh. opt |
+| **run29** | 0.7853 | Local+Kaggle⁵ | 750 | None | LOUO 5f | No | 5 LGB + 2 XGB + 1 RF + thresh. opt |
+| **run30** | 0.7893 | Local+Kaggle⁵ | 716 | None | LOUO 5f | No | 5 LGB + 2 XGB + 1 RF + thresh. opt |
+| **run31** | **0.7906** | Local+Kaggle⁵ | 716 | None | LOUO 5f | No | 5 LGB + 2 XGB + 1 RF + thresh. opt |
+
+```{=latex}
+\normalsize
+```
+
+## Part B — Feature Groups and Key Changes
+
+```{=latex}
+\footnotesize
+```
+
+| Run | Feature Groups (see legend) | Key Change / Purpose |
+|---|---|---|
+| **Baseline A/B** | Basic channel stats | First notebook submissions |
+| **run03** | ch-stats9, seg(5/10/20), autocorr, slope, xcorr, ZCR, spectral(5×6) | First LOUO-CV; CNN+LGB; CSV loading |
+| **run04** | Same as run03 | Switch to NPZ loading |
+| **run05** | Same ×2 (raw + window-norm concatenated) | Dropped CNN; massive feature space |
+| **run06** | core373 (no raw mean channels) | User-invariant features; no normalization |
+| **run07** | core373 | Per-user normalization; first good result |
+| **run07imp** | core373 → feat. selection (150–200) | Aggressive feature pruning; local only |
+| **run08** | core373 | TTA (5 shifts) + minority oversampling |
+| **run08(1)** | core373 | SMOTE; wrong CV (stratified not LOUO) |
+| **run12** | core373 → selected (50–200) | TCN + Transformer deep learning attempt |
+| **run15** | core373 → selected (50) | 86.6% feature reduction; CSV loading |
+| **run17** | core373 + slope(mag), half-compare, 5-seg, 2nd-jerk (+55) | First threshold opt (Nelder-Mead); 30-model LGB |
+| **run18** | core373 + user\_ctx(45) = 418 | +User context z-scores; LGB+XGB; augmentation |
+| **run19** | core373 − mag\_mean(9) ≈ 364 | Ablation: removing mag\_mean; no user\_ctx |
+| **run19\_2s** | core373 | Two-stage C2 cascade; failed (0.53) |
+| **run20** | core373 + user\_ctx(45) + sma(27) = 445 | +SMA (L1 magnitude); +RF in ensemble |
+| **run21** | — | Diagnostic visualization only |
+| **run22** | core373 + user\_ctx(45) + jerk\_asym(6) = 424 | +Jerk asymmetry (pos/neg per axis) |
+| **run23** | core373 − mag\_mean(9) + trend(18) = 382 | Dropped normalization; trend features; strong aug |
+| **run24** | run23 + extra stats (energy,MAD,RMS,q05,q10,q90,q95) ≈ 417 | +7 stats/signal; hurt (correlated, noise) |
+| **run25** | same as run23 = 382 | Ablation: no augmentation; fewer models |
+| **run26** | run23 + seg-energy(sx,sy,sz) = 412 | +Segment energy; no augmentation |
+| **run27** | axis\_stat(156)+acc\_mag(52)+cross\_mag(156)+sum\_feat(52)+fft\_peak(50)+win(250) = 716 | Notebook-exact feature set; early stopping |
+| **run28** | run27 + tilt(6)+covcorr(6)+mean\_xyz\_fft(18)+step\_rhythm(4) = 750 | +34 physics feats; stronger reg; +RF; reg too strong |
+| **run29** | same as run28 = 750 | Reverted regularization; partial recovery |
+| **run30** | same as run27 = 716 | Reverted to 716 feat (34 new redundant); kept RF |
+| **run31** | same as run27/30 = 716 | LR 0.03→0.01; patience 100→300; best result |
+
+```{=latex}
+\normalsize
+```
+
+---
+
+# Kaggle Data Paths
+
+| Footnote | Input path detection | Output path |
+|---|---|---|
+| ¹ run03 | Searches `/kaggle/input/*/train/train/` for CSV directories | `/kaggle/working/` |
+| ² run04 | Hardcoded: `/kaggle/input/train-data/train_data.npz`, `/kaggle/input/test-data/test_data.npz` | `/kaggle/working/` |
+| ³ run05–run08 | `glob("/kaggle/input/**/*.npz", recursive=True)` | `/kaggle/working/` if `Path("/kaggle/working").exists()` |
+| ⁴ run17–run22 | Checks `/kaggle/input/`, `/kaggle/input/train-data/`, `/kaggle/input/test-data/`, `/kaggle/input/har-data/` | Hardcoded `/kaggle/working/` |
+| ⁵ run23–run31 | Same search as ⁴ + local fallback in `outputs/` | `Path("/kaggle/input").exists()` → `/kaggle/working/`; else `outputs/` (laptop) |
+
+---
+
+# Kaggle Score Progression
+
+```{python}
+#| label: fig-score-progression
+#| fig-cap: "Kaggle macro F1 score per submitted run. Baseline A/B are pre-run notebook submissions."
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+runs = [
+    "Baseline A", "Baseline B",
+    "run04", "run05", "run06", "run07",
+    "run07imp", "run08", "run08(1)",
+    "run12", "run15", "run17",
+    "run18", "run19", "run19_2s",
+    "run20", "run22", "run23",
+    "run24", "run25", "run26",
+    "run27", "run28", "run29",
+    "run30", "run31"
+]
+
+scores = [
+    0.7531, 0.7366,
+    0.7042, 0.7337, 0.7501, 0.7707,
+    0.7519, 0.7559, 0.7524,
+    0.7295, 0.7565, 0.7400,
+    0.7738, 0.7392, 0.5342,
+    0.7593, 0.7691, 0.7792,
+    0.7618, 0.7633, 0.7703,
+    0.7895, 0.7785, 0.7853,
+    0.7893, 0.7906
+]
+
+fig, ax = plt.subplots(figsize=(14, 5))
+colors = ['#d62728' if s < 0.60 else '#ff7f0e' if s < 0.73 else '#2ca02c' if s >= 0.78 else '#1f77b4'
+          for s in scores]
+bars = ax.bar(range(len(runs)), scores, color=colors, edgecolor='white', linewidth=0.5)
+ax.set_xticks(range(len(runs)))
+ax.set_xticklabels(runs, rotation=45, ha='right', fontsize=8)
+ax.set_ylim(0.45, 0.82)
+ax.set_ylabel("Macro F1 (Kaggle)")
+ax.set_title("Kaggle Submission Scores by Run")
+ax.axhline(0.7895, color='green', linestyle='--', linewidth=0.8, label='run27 (0.7895)')
+ax.axhline(0.7906, color='darkgreen', linestyle='-', linewidth=1.2, label='run31 (0.7906, best)')
+ax.axhline(0.7738, color='steelblue', linestyle=':', linewidth=0.8, label='run18 (0.7738, best with norm)')
+ax.legend(fontsize=8)
+for i, (bar, s) in enumerate(zip(bars, scores)):
+    if s >= 0.77:
+        ax.text(bar.get_x() + bar.get_width()/2, s + 0.002, f"{s:.4f}",
+                ha='center', va='bottom', fontsize=6.5, fontweight='bold')
+plt.tight_layout()
+plt.show()
+```
+
+---
+
+# Key Transitions
+
+## Phase 1: Architecture exploration (run03–run08)
+Starting from CNN+LGB ensembles loading original CSV files, the early runs explored within-window normalization, feature concatenation (raw + normalized), and TTA/SMOTE augmentation. The CNN was dropped after run04/05 as it consistently hurt Kaggle generalization. The critical discovery was **per-user normalization** (run07, 0.7707): normalizing each user's windows by that user's own global mean/std removes the cross-user DC offset while preserving within-user activity differences.
+
+## Phase 2: Feature expansion with per-user normalization (run17–run22)
+Run17 introduced threshold optimization (Nelder-Mead on OOF probabilities) and a larger 30-model ensemble. Run18 (0.7738) added user-contextual features (+45 z-score deviation features) and a LGB+XGB ensemble with augmentation. Subsequent runs added SMA (run20) and jerk asymmetry (run22) but neither improved substantially, suggesting the 373+45 feature set was near saturation given per-user normalization.
+
+## Phase 3: Dropping per-user normalization (run23–run26)
+The key insight from the reference notebook (Kaggle score 0.7923) was that **per-user normalization removes the gravity direction**, which is the most discriminative signal for distinguishing walk\_up from walk\_down. Run23 dropped normalization, removed mag\_mean (rotation-invariant, loses gravity direction), and added trend features (first/last 60 timestep mean per channel). Result: 0.7792 (+0.005 vs run18 without augmentation advantage). Removing augmentation (run25: 0.7633) confirmed that **augmentation is essential** when generalizing to unseen test users despite higher CV scores without it.
+
+## Phase 4: Notebook-exact feature set (run27–run31)
+Run27 implemented the reference notebook's full 716-feature set (axis-specific mean/std stats+diff, cross-magnitudes, window features, FFT+peaks) achieving 0.7895. Attempts to add 34 new features (tilt, axis covariance, mean FFT, step rhythm) in run28/29 hurt performance — the new features were geometrically redundant with the cross\_magnitudes group (0.7785/0.7853). Run30 added a Random Forest to the ensemble (0.7893), and run31 lowered the LGB learning rate (0.03→0.01) with wider early-stopping patience (100→300) to allow more boosting iterations, achieving the best result: **0.7906**.
