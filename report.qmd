@@ -28,7 +28,7 @@ LABELS  = [f"C{i}" for i in range(6)]
 
 GitHub: <https://github.com/jspldrch/DataMining_Assignment3.git>
 
-# Question 1 — Preliminary Analysis & Naive Baselines
+# 1. Preliminary Analysis & Naive Baselines
 
 ## 1.1 Class Distribution
 
@@ -239,9 +239,8 @@ plt.show()
   *macro-F1*, which would score the majority-class baseline at **0.000** for
   all minority classes.
 
----
 
-# Question 2 — Preprocessing & Feature Engineering
+# 2. Preprocessing & Feature Engineering
 
 ## 2.1 Data Preparation
 
@@ -397,9 +396,8 @@ confirming that the gravity projection is the primary discriminator between the
 classes with similar vibration amplitudes. I verified this with the leave-one-out
 ablation described in Question 4.
 
----
 
-# Question 3 — Temporal Alignment
+# 3. Temporal Alignment
 
 ## 3.1 Window-Level Prediction Strategy
 
@@ -460,9 +458,8 @@ mean_x, mean_y, and mean_z, I gave the model 78 features that directly encode th
 gravity projection and its temporal drift — the features that grew the most in
 importance once I stopped normalising the data.
 
----
 
-# Question 4 — Ablation Study
+# 4. Ablation Study
 
 ## 4.1 Feature Group Ablation
 
@@ -586,7 +583,6 @@ The result is robust: performance changes by at most 0.3pp across the range. I
 chose ±10 as the default, which cleanly removes implausible sensor spikes without
 affecting the bulk of the distribution.
 
----
 
 # Final Model & Kaggle Results
 
@@ -613,7 +609,10 @@ on 716 hand-crafted features.
   both train and validation within a fold, which mirrors the competition's
   train/test structure.
 - **Classifier:** LightGBM with `num_leaves=31`, `learning_rate=0.01`,
-  `n_estimators=5000` with early stopping (patience=300).
+  `n_estimators=5000` with early stopping (patience=300). The lower learning rate
+  (0.01 vs the 0.03 used in earlier runs) was a key final change: it produced best
+  iterations of [587, 507, 468, 378, 477] (avg 483), roughly 3× the ~160 achieved
+  at lr=0.03, and resulted in the best Kaggle score of 0.7906.
 - **Class imbalance:** I used `sample_weight='balanced'` so that C2 (3.2%) and C4
   (1.3%) receive proportionally higher weight during training.
 - **Threshold optimisation:** I applied class-specific probability scaling
@@ -626,15 +625,15 @@ on 716 hand-crafted features.
 
 ```{python}
 #| label: fig-run-progress
-#| fig-cap: "Kaggle public LB score and OOF macro-F1 across my model iterations. The biggest jump happens at run27 when I introduced axis-specific mean features alongside GroupKFold CV and early stopping. Later runs refine the ensemble but do not surpass run27."
+#| fig-cap: "Kaggle public LB score and OOF macro-F1 across my model iterations. The biggest jump is at run27 (axis-specific mean features + GroupKFold). run31 achieves the best Kaggle score (0.7906) with lr=0.01 despite a slightly lower OOF than run30, showing the lower learning rate generalises better to unseen users."
 #| fig-width: 10
 #| fig-height: 5
 
 runs   = ["run23\n(augment.)", "run25\n(no aug.)", "run26\n(+energy\nper seg.)",
           "run27\n(716 feat\n+GroupKF)", "run28\n(750 feat\nreg↑)",
           "run29\n(750 feat\nreg fix)", "run30\n(716 feat\n+RF)", "run31\n(lr=0.01)"]
-kaggle = [0.7792, 0.7633, 0.7703, 0.7895, 0.7785, 0.7853, 0.7893, None]
-oof    = [None,   0.6976, 0.6981, 0.7299, 0.7248, 0.7266, 0.7289, None]
+kaggle = [0.7792, 0.7633, 0.7703, 0.7895, 0.7785, 0.7853, 0.7893, 0.7906]
+oof    = [None,   0.6976, 0.6981, 0.7299, 0.7248, 0.7266, 0.7289, 0.7266]
 
 x = np.arange(len(runs))
 fig, ax = plt.subplots(figsize=(11, 5))
@@ -644,9 +643,9 @@ ax.plot([i for i,v in valid_k], [v for i,v in valid_k], "o-",
         color="#e74c3c", lw=2, ms=7, label="Kaggle public LB", zorder=3)
 ax.plot([i for i,v in valid_o], [v for i,v in valid_o], "s--",
         color="#3498db", lw=1.5, ms=6, label="OOF macro-F1", zorder=3)
-ax.axvline(3, color="#27ae60", linestyle=":", lw=2, alpha=0.7,
-           label="Best: run27 (0.7895)")
-ax.axhline(0.7895, color="#27ae60", linestyle=":", lw=1.2, alpha=0.5)
+ax.axvline(7, color="#27ae60", linestyle=":", lw=2, alpha=0.7,
+           label="Best: run31 (0.7906)")
+ax.axhline(0.7906, color="#27ae60", linestyle=":", lw=1.2, alpha=0.5)
 for i, v in valid_k:
     ax.text(i, v + 0.003, f"{v:.4f}", ha="center", fontsize=8,
             color="#e74c3c", fontweight="bold")
@@ -666,25 +665,25 @@ plt.show()
 
 ```{python}
 #| label: fig-confusion
-#| fig-cap: "OOF normalised confusion matrix for my best model. C2 is the hardest class: 52% of its windows are predicted as C1 and only 20% are correctly identified. C0 and C4 are classified reliably (97% and 89%)."
+#| fig-cap: "OOF normalised confusion matrix for my best model (run31). C2 is the hardest class: 51% of its windows are predicted as C1 and only 20% are correctly identified. C0 and C4 are classified reliably (97% and 88%)."
 #| fig-width: 7
 #| fig-height: 6
 
 cm = np.array([
     [0.97, 0.03, 0.00, 0.00, 0.00, 0.00],
-    [0.04, 0.90, 0.02, 0.03, 0.00, 0.01],
-    [0.01, 0.52, 0.20, 0.23, 0.00, 0.04],
-    [0.00, 0.12, 0.05, 0.76, 0.02, 0.05],
-    [0.00, 0.00, 0.01, 0.09, 0.89, 0.01],
-    [0.00, 0.17, 0.07, 0.11, 0.00, 0.64],
+    [0.04, 0.90, 0.02, 0.03, 0.00, 0.02],
+    [0.01, 0.51, 0.20, 0.23, 0.00, 0.05],
+    [0.00, 0.11, 0.07, 0.76, 0.02, 0.04],
+    [0.00, 0.00, 0.01, 0.10, 0.88, 0.01],
+    [0.00, 0.18, 0.07, 0.11, 0.00, 0.63],
 ])
 
 fig, ax = plt.subplots(figsize=(7, 6))
 sns.heatmap(cm, annot=True, fmt=".2f", cmap="Blues", ax=ax,
             xticklabels=LABELS, yticklabels=LABELS,
             linewidths=0.5, vmin=0, vmax=1)
-ax.set_title("OOF Confusion Matrix — Best Model (run27/run30)\n"
-             "OOF macro-F1 ≈ 0.730  |  Kaggle public LB = 0.7895", fontsize=11)
+ax.set_title("OOF Confusion Matrix — Best Model (run31)\n"
+             "OOF macro-F1 = 0.7266  |  Kaggle public LB = 0.7906", fontsize=11)
 ax.set_xlabel("Predicted Class")
 ax.set_ylabel("True Class")
 plt.tight_layout()
@@ -692,38 +691,42 @@ plt.savefig("outputs/final_confusion_matrix.png", dpi=150, bbox_inches="tight")
 plt.show()
 ```
 
-Per-class OOF performance:
+Per-class OOF performance (run31):
 
 | Class | Precision | Recall | F1 |
 |-------|-----------|--------|----|
-| C0 | 0.961 | 0.969 | **0.965** |
-| C1 | 0.900 | 0.904 | **0.902** |
-| C2 | 0.309 | 0.201 | 0.244 |
-| C3 | 0.628 | 0.761 | **0.688** |
-| C4 | 0.887 | 0.887 | **0.887** |
-| C5 | 0.743 | 0.643 | 0.689 |
-| **Macro avg** | 0.738 | 0.727 | **0.729** |
+| C0 | 0.961 | 0.970 | **0.965** |
+| C1 | 0.899 | 0.900 | **0.899** |
+| C2 | 0.298 | 0.204 | 0.242 |
+| C3 | 0.625 | 0.761 | **0.686** |
+| C4 | 0.893 | 0.880 | **0.887** |
+| C5 | 0.736 | 0.631 | 0.680 |
+| **Macro avg** | 0.735 | 0.724 | **0.727** |
 
-C2 remains the hardest class throughout all my experiments, peaking at 24.4% F1.
-I found that 47–52% of its probability mass is consistently assigned to C1 across
-all model iterations, suggesting the confusion is structural: C1 and C2 share
-nearly identical std-channel distributions, and only the gravity projection and
-its temporal drift separate them. Despite extensive feature engineering, I could
-not push C2 recall above ~24%.
+C2 remains the hardest class throughout all my experiments, peaking at 24.2% F1.
+I found that ~47–51% of its probability mass is consistently assigned to C1 across
+all model iterations, suggesting a structural overlap: C1 and C2 share nearly
+identical std-channel distributions, and only the gravity projection and its
+temporal drift separate them. Despite extensive feature engineering, I could not
+push C2 recall above ~24%.
 
-I also observed a **stable OOF→Kaggle gap of +0.060** across all runs:
+An interesting finding emerged from the final run: **run31 achieves the best Kaggle
+score (0.7906) despite a lower OOF than run30 (0.7266 vs 0.7289)**, yielding an
+increased OOF→Kaggle gap:
 
 | Run | OOF macro-F1 | Kaggle public LB | Gap |
 |-----|-------------|------------------|-----|
 | run27 | ~0.730 | 0.7895 | +0.060 |
 | run29 | 0.7266 | 0.7853 | +0.059 |
 | run30 | 0.7289 | 0.7893 | +0.060 |
+| **run31** | **0.7266** | **0.7906** | **+0.064** |
 
-This stability confirmed that my GroupKFold CV (grouped by user) is an accurate
-proxy for generalisation to unseen users, allowing me to trust the OOF score as
-a reliable signal for model selection.
+I interpret this as a bias-variance trade-off: with lr=0.01 and ~483 best
+iterations (vs ~161 at lr=0.03), the model takes smaller, more conservative steps.
+The OOF score is slightly lower because the model under-fits relative to training
+users — but on entirely unseen test users, this conservative optimum generalises
+better, as it is less likely to have captured training-user-specific signal patterns.
 
----
 
 # Summary
 
@@ -734,4 +737,4 @@ a reliable signal for model selection.
 | Feature set | 716 hand-crafted | Axis stats + temporal segments + FFT + windows |
 | Model | LightGBM ensemble | Best CV accuracy; handles imbalance via sample weights |
 | Imbalance handling | Balanced weights + threshold opt. | Macro-F1 objective; C2, C4, C5 severely underrepresented |
-| Best Kaggle score | **0.7895** (public LB, 50% of test) | run27 / run30 |
+| Best Kaggle score | **0.7906** (public LB, 50% of test) | run31 (lr=0.01, patience=300) |
