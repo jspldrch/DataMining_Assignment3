@@ -13,19 +13,26 @@ import lightgbm as lgb
 import warnings
 warnings.filterwarnings('ignore')
 
-OUT_DIR = Path("outputs")
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
 SEED = 42
 np.random.seed(SEED)
 
-# load data
 def find_npz(name):
-    hits = glob.glob(f"**/{name}", recursive=True)
+    search_paths = [
+        Path("/kaggle/input/train-data") / name,
+        Path("/kaggle/input/test-data") / name,
+        Path("/kaggle/input") / name,
+    ]
+    for path in search_paths:
+        if path.exists():
+            return str(path)
+    hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
     if hits:
         return hits[0]
-    raise FileNotFoundError(f"{name} not found")
+    raise FileNotFoundError(f"Cannot find {name}")
 
 print("Loading NPZ data...")
 tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -253,9 +260,7 @@ for seed in range(5):
 main_proba = np.mean(main_probas, axis=0)
 print(f"  Main model trained (15 models)")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ENSEMBLE WITH RARE CLASS DETECTORS
-# ──────────────────────────────────────────────────────────────────────────────
+# ensemble with rare class detectors
 print("\n" + "="*60)
 print("ENSEMBLE WITH RARE CLASS DETECTORS")
 print("="*60)
@@ -275,9 +280,7 @@ class4_override_idx = np.where(class4_confidence > 0.65)[0]  # Higher threshold 
 final_preds[class4_override_idx] = 4
 print(f"  Overrode {len(class4_override_idx)} predictions to Class 4")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# POST-PROCESSING
-# ──────────────────────────────────────────────────────────────────────────────
+# post-processing
 print("\n" + "="*60)
 print("FINAL PREDICTIONS")
 print("="*60)
@@ -288,15 +291,13 @@ for c in range(6):
     expected = int(len(final_preds) * counts[c] / len(y_train))
     print(f"  Class {c}: {pred_counts.get(c, 0):5d} (expected: {expected:5d})")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 submission = pd.DataFrame({"Id": test_ids, "Label": final_preds})
 submission = submission.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run13_two_stage.csv"
 submission.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
+print(f"\nSubmission saved: {out_path}")
 print("\nClass 2 detection stats:")
 print(f"  Mean confidence: {class2_confidence.mean():.3f}")
 print(f"  Samples with >0.6 confidence: {len(class2_override_idx)}")

@@ -1,6 +1,4 @@
-"""
-model_run05.py — LightGBM ensemble
-"""
+# run05: LightGBM ensemble, combined normalized and raw features, 9 models
 
 import numpy as np
 import pandas as pd
@@ -14,24 +12,26 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, confusion_matrix
 import lightgbm as lgb
 
-# ── Output path: always /kaggle/working if on Kaggle, else local outputs/ ─────
-if Path("/kaggle/working").exists():
-    OUT_DIR = Path("/kaggle/working")
-else:
-    OUT_DIR = Path(__file__).parent / "outputs"
+# output path
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
-# 1. LOAD NPZ 
+# 1. LOAD NPZ
 
 def find_npz(name: str) -> str:
+    search_paths = [
+        Path("/kaggle/input/train-data") / name,
+        Path("/kaggle/input/test-data") / name,
+        Path("/kaggle/input") / name,
+    ]
+    for p in search_paths:
+        if p.exists():
+            return str(p)
     hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
     if hits:
         return hits[0]
-    local = Path(__file__).parent / "outputs" / name
-    if local.exists():
-        return str(local)
-    raise FileNotFoundError(f"{name} not found in /kaggle/input or local outputs/")
+    raise FileNotFoundError(f"Cannot find {name}")
 
 print("Loading npz files …")
 train_data = np.load(find_npz("train_data.npz"), allow_pickle=True)

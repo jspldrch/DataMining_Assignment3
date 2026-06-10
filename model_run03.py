@@ -1,12 +1,10 @@
-"""
-model_run03.py — 1D-CNN + LightGBM Ensemble with user-invariant features
-
-"""
+# run03: 1D-CNN + LightGBM ensemble with user-invariant features
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import glob
 from pathlib import Path
 from scipy.stats import skew, kurtosis
 from scipy.signal import welch
@@ -26,27 +24,9 @@ except ImportError:
     HAS_LGB = False
     print("LightGBM not found — running CNN only. pip install lightgbm")
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
-def _find_base_dir():
-    kaggle_input = Path("/kaggle/input")
-    if kaggle_input.exists():
-        for comp_dir in kaggle_input.iterdir():
-            if (comp_dir / "train" / "train").exists():
-                return comp_dir, Path("/kaggle/working")
-    try:
-        import google.colab
-        p = Path("/content/DataMining_Assignment3")
-        return p, p / "outputs"
-    except ImportError:
-        pass
-    p = Path(__file__).parent
-    return p, p / "outputs"
-
-BASE_DIR, OUT_DIR = _find_base_dir()
-TRAIN_DIR = BASE_DIR / "train" / "train"
-TEST_DIR  = BASE_DIR / "test"  / "test"
+# paths
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-print(f"BASE_DIR : {BASE_DIR}")
 
 DEVICE    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 FEAT_COLS = ["mean_x", "mean_y", "mean_z", "std_x", "std_y", "std_z"]
@@ -54,23 +34,30 @@ print(f"Device   : {DEVICE}")
 
 # 1. DATA LOADING
 
-def load_dataset(root_dir: Path):
-    sequences, labels, file_ids, users = [], [], [], []
-    for user_dir in sorted(root_dir.iterdir()):
-        for csv_path in sorted(user_dir.glob("*.csv")):
-            df = pd.read_csv(csv_path)
-            sequences.append(df[FEAT_COLS].values.astype(np.float32))
-            if "label" in df.columns:
-                labels.append(int(df["label"].iloc[0]))
-            file_ids.append(int(df["file_id"].iloc[0]))
-            users.append(user_dir.name)
-    X = np.array(sequences)                          # (N, 300, 6)
-    X = np.nan_to_num(X, nan=0.0)
-    return X, np.array(labels) if labels else None, np.array(file_ids), np.array(users)
+def find_npz(name):
+    search_paths = [
+        Path("/kaggle/input/train-data") / name,
+        Path("/kaggle/input/test-data") / name,
+        Path("/kaggle/input") / name,
+    ]
+    for p in search_paths:
+        if p.exists():
+            return str(p)
+    hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
+    if hits:
+        return hits[0]
+    raise FileNotFoundError(f"Cannot find {name}")
 
 print("Loading data …")
-X_train_raw, y_train, train_ids, train_users = load_dataset(TRAIN_DIR)
-X_test_raw,  _,       test_ids,  _           = load_dataset(TEST_DIR)
+train_data = np.load(find_npz("train_data.npz"), allow_pickle=True)
+test_data  = np.load(find_npz("test_data.npz"),  allow_pickle=True)
+
+X_train_raw  = np.nan_to_num(train_data["X"].astype(np.float32), nan=0.0)
+y_train      = train_data["y"].astype(np.int32)
+train_ids    = train_data["file_ids"]
+train_users  = train_data["users"]
+X_test_raw   = np.nan_to_num(test_data["X"].astype(np.float32), nan=0.0)
+test_ids     = test_data["file_ids"]
 print(f"  Train: {X_train_raw.shape}  |  Test: {X_test_raw.shape}")
 
 unique_users = np.unique(train_users)
@@ -78,6 +65,7 @@ print(f"  Training users: {len(unique_users)}")
 unique, counts = np.unique(y_train, return_counts=True)
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_train)*100:.1f}%)")
+print(f"Output dir: {OUT_DIR}")
 
 # 2. WITHIN-WINDOW NORMALISATION
 
@@ -349,9 +337,7 @@ else:
 preds = final_proba.argmax(axis=1)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 7. SAVE OUTPUTS
-# ══════════════════════════════════════════════════════════════════════════════
+# 7. save outputs
 
 submission = pd.DataFrame({"Id": test_ids, "Label": preds})
 submission = submission.sort_values("Id").reset_index(drop=True)

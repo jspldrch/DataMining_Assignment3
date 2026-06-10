@@ -1,169 +1,66 @@
-"""
-model_run13.py — REACH FOR 0.83 with ORIGINAL CSV DATA
-
-"""
+# run13: InceptionTime CNN, mixup, label smoothing, pseudo-labeling, TTA — original CSV data
 
 import numpy as np
 import pandas as pd
-import os
 import glob
 from pathlib import Path
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
-from sklearn.preprocessing import LabelEncoder
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
-from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-# Configuration
-
 class Config:
-    # Paths
-    TRAIN_PATH = Path("train/train")  # Original train folder with CSV files
-    TEST_PATH = Path("test/test")      # Original test folder with CSV files
-    OUTPUT_DIR = Path("outputs")
-    
-    # Create output directory
+    OUTPUT_DIR = Path("/kaggle/working")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Model parameters
     BATCH_SIZE = 128
     LEARNING_RATE = 1e-2
     EPOCHS = 150
     N_FOLDS = 5
     PSEUDO_THRESHOLD = 0.95
     SEED = 42
-    
-    # Device
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Data parameters
-    SEQ_LEN = 300  # 5 minutes * 60 seconds = 300
-    N_CHANNELS = 6  # mean_x, mean_y, mean_z, std_x, std_y, std_z
+    SEQ_LEN = 300
+    N_CHANNELS = 6
 
 cfg = Config()
 print(f"Device: {cfg.DEVICE}")
 print(f"Output directory: {cfg.OUTPUT_DIR}")
-print(f"Train path: {cfg.TRAIN_PATH}")
-print(f"Test path: {cfg.TEST_PATH}")
 
-# Set random seeds
 np.random.seed(cfg.SEED)
 torch.manual_seed(cfg.SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(cfg.SEED)
 
+def find_npz(name):
+    search_paths = [
+        Path("/kaggle/input/train-data") / name,
+        Path("/kaggle/input/test-data") / name,
+        Path("/kaggle/input") / name,
+    ]
+    for path in search_paths:
+        if path.exists():
+            return str(path)
+    hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
+    if hits:
+        return hits[0]
+    raise FileNotFoundError(f"Cannot find {name}")
 
-class HARDataLoader:
-    def __init__(self, train_path, test_path, seq_len=300, feature_cols=None):
-        self.train_path = Path(train_path)
-        self.test_path = Path(test_path)
-        self.seq_len = seq_len
-        self.feature_cols = feature_cols or ["mean_x", "mean_y", "mean_z", "std_x", "std_y", "std_z"]
-        
-    def load_data(self):
-        """Load all training and test data from CSV files"""
-        print("\n" + "="*60)
-        print("LOADING DATA FROM CSV FILES")
-        print("="*60)
-        
-        # Load training data
-        print("\nLoading training data...")
-        X_train = []
-        y_train = []
-        train_users = []
-        train_file_ids = []
-        
-        # Get all user directories
-        user_dirs = sorted([d for d in self.train_path.iterdir() if d.is_dir()])
-        print(f"Found {len(user_dirs)} user directories")
-        
-        for user_dir in tqdm(user_dirs, desc="Loading training users"):
-            user_name = user_dir.name
-            csv_files = sorted(user_dir.glob("*.csv"))
-            
-            for csv_path in csv_files:
-                df = pd.read_csv(csv_path)
-                
-                # Extract features (300 rows, 6 columns)
-                features = df[self.feature_cols].values.astype(np.float32)
-                
-                # Ensure we have exactly seq_len rows
-                if len(features) != self.seq_len:
-                    print(f"Warning: {csv_path} has {len(features)} rows, expected {self.seq_len}")
-                    if len(features) < self.seq_len:
-                        # Pad with zeros
-                        pad = np.zeros((self.seq_len - len(features), len(self.feature_cols)))
-                        features = np.vstack([features, pad])
-                    else:
-                        # Truncate
-                        features = features[:self.seq_len]
-                
-                X_train.append(features)
-                
-                # Get label (all rows in file have same label)
-                label = int(df["label"].iloc[0])
-                y_train.append(label)
-                
-                train_users.append(user_name)
-                train_file_ids.append(int(df["file_id"].iloc[0]))
-        
-        X_train = np.array(X_train)
-        y_train = np.array(y_train)
-        train_users = np.array(train_users)
-        train_file_ids = np.array(train_file_ids)
-        
-        print(f"  Training data shape: {X_train.shape}")
-        print(f"  Training labels shape: {y_train.shape}")
-        print(f"  Training users: {len(np.unique(train_users))}")
-        
-        # Load test data
-        print("\nLoading test data...")
-        X_test = []
-        test_ids = []
-        test_users = []
-        
-        test_user_dirs = sorted([d for d in self.test_path.iterdir() if d.is_dir()])
-        print(f"Found {len(test_user_dirs)} test user directories")
-        
-        for user_dir in tqdm(test_user_dirs, desc="Loading test users"):
-            user_name = user_dir.name
-            csv_files = sorted(user_dir.glob("*.csv"))
-            
-            for csv_path in csv_files:
-                df = pd.read_csv(csv_path)
-                
-                # Extract features
-                features = df[self.feature_cols].values.astype(np.float32)
-                
-                if len(features) != self.seq_len:
-                    if len(features) < self.seq_len:
-                        pad = np.zeros((self.seq_len - len(features), len(self.feature_cols)))
-                        features = np.vstack([features, pad])
-                    else:
-                        features = features[:self.seq_len]
-                
-                X_test.append(features)
-                test_ids.append(int(df["file_id"].iloc[0]))
-                test_users.append(user_name)
-        
-        X_test = np.array(X_test)
-        test_ids = np.array(test_ids)
-        test_users = np.array(test_users)
-        
-        print(f"  Test data shape: {X_test.shape}")
-        print(f"  Test files: {len(test_ids)}")
-        
-        return X_train, y_train, train_users, train_file_ids, X_test, test_ids, test_users
+print("Loading NPZ data...")
+tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
+te = np.load(find_npz("test_data.npz"),  allow_pickle=True)
 
-# Load the data
-loader = HARDataLoader(cfg.TRAIN_PATH, cfg.TEST_PATH, seq_len=cfg.SEQ_LEN)
-X_train_raw, y_train, train_users, train_file_ids, X_test_raw, test_ids, test_users = loader.load_data()
+X_train_raw  = np.nan_to_num(tr["X"].astype(np.float32), nan=0.0)
+y_train      = tr["y"].astype(np.int32)
+train_users  = tr["users"]
+X_test_raw   = np.nan_to_num(te["X"].astype(np.float32), nan=0.0)
+test_ids     = te["file_ids"]
+test_users   = te["users"]
+train_file_ids = np.arange(len(y_train))
 
 # Class distribution
 unique, counts = np.unique(y_train, return_counts=True)
@@ -340,9 +237,7 @@ def evaluate(model, loader, device):
     
     return all_preds, all_targets, np.array(all_probs)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Create User-Stratified Folds
-# ──────────────────────────────────────────────────────────────────────────────
+# create user-stratified folds
 print("\n" + "="*60)
 print("CREATING USER-STRATIFIED FOLDS")
 print("="*60)
@@ -359,9 +254,7 @@ for fold in range(cfg.N_FOLDS):
     n_samples = np.sum(fold_ids == fold)
     print(f"  Fold {fold}: {n_users} users, {n_samples} samples")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Cross-Validation Training
-# ──────────────────────────────────────────────────────────────────────────────
+# cross-validation training
 print("\n" + "="*60)
 print("CROSS-VALIDATION TRAINING")
 print("="*60)
@@ -457,9 +350,7 @@ cm = confusion_matrix(y_train, oof_preds, normalize='true')
 for i in range(6):
     print(f"  Class {i}: {cm[i]}")
     
-# ──────────────────────────────────────────────────────────────────────────────
-# Pseudo-Labeling (Semi-Supervised Learning)
-# ──────────────────────────────────────────────────────────────────────────────
+# pseudo-labeling (semi-supervised learning)
 print("\n" + "="*60)
 print("PSEUDO-LABELING ROUND")
 print("="*60)
@@ -533,9 +424,7 @@ if high_conf_idx.sum() > 0:
         if (epoch + 1) % 20 == 0:
             print(f"  Epoch {epoch+1:3d} | Loss: {train_loss:.4f} | Acc: {train_acc:.4f}")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Test-Time Augmentation (TTA)
-# ──────────────────────────────────────────────────────────────────────────────
+# test-time augmentation (TTA)
 print("\n" + "="*60)
 print("TEST-TIME AUGMENTATION")
 print("="*60)
@@ -566,9 +455,7 @@ print("Generating final test predictions with TTA...")
 test_probs = test_time_augmentation(final_model, X_test_tensor.to(cfg.DEVICE), n_augments=5)
 test_preds = test_probs.argmax(axis=1)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Post-Processing: Ensure rare classes get reasonable predictions
-# ──────────────────────────────────────────────────────────────────────────────
+# post-processing: ensure rare classes get reasonable predictions
 print("\n" + "="*60)
 print("POST-PROCESSING")
 print("="*60)
@@ -598,9 +485,7 @@ for c in range(6):
     expected = int(len(test_preds) * counts[c] / len(y_train))
     print(f"  Class {c}: {final_counts.get(c, 0):5d} (expected: {expected:5d})")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Save Submission
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 print("\n" + "="*60)
 print("SAVING SUBMISSION")
 print("="*60)
@@ -610,16 +495,14 @@ submission = submission.sort_values("Id").reset_index(drop=True)
 out_path = cfg.OUTPUT_DIR / "submission_run13.csv"
 submission.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
+print(f"\nSubmission saved: {out_path}")
 print(f"   File size: {out_path.stat().st_size / 1024:.1f} KB")
 
 # Display sample
 print("\nSubmission sample (first 10 rows):")
 print(submission.head(10))
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Summary
-# ──────────────────────────────────────────────────────────────────────────────
+# summary
 print("\n" + "="*60)
 print("RUN13 SUMMARY")
 print("="*60)
@@ -638,7 +521,7 @@ print(f"OOF Macro F1: {oof_f1:.4f}")
 print(f"\nPrediction distribution:")
 for c in range(6):
     print(f"  Class {c}: {final_counts.get(c, 0):5d}")
-print(f"\n✅ Done! Submit {out_path} to Kaggle")
+print(f"\nDone. Submit {out_path} to Kaggle")
 print(f"Expected score: 0.81-0.83")
 print("="*60)
 

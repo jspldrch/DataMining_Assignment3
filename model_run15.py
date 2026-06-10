@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import glob
 from pathlib import Path
 from scipy.stats import skew, kurtosis
 from scipy.signal import welch, find_peaks
@@ -13,68 +14,37 @@ import lightgbm as lgb
 import warnings
 warnings.filterwarnings('ignore')
 
-OUT_DIR = Path("outputs")
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
 SEED = 42
 np.random.seed(SEED)
 
-# load original CSV data
-def load_csv_data(train_path, test_path):
-    train_path = Path(train_path)
-    test_path = Path(test_path)
-    feature_cols = ["mean_x", "mean_y", "mean_z", "std_x", "std_y", "std_z"]
-    seq_len = 300
+def find_npz(name):
+    search_paths = [
+        Path("/kaggle/input/train-data") / name,
+        Path("/kaggle/input/test-data") / name,
+        Path("/kaggle/input") / name,
+    ]
+    for path in search_paths:
+        if path.exists():
+            return str(path)
+    hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
+    if hits:
+        return hits[0]
+    raise FileNotFoundError(f"Cannot find {name}")
 
-    print("Loading training data...")
-    X_train, y_train, train_users, train_file_ids = [], [], [], []
-    
-    for user_dir in sorted(train_path.iterdir()):
-        if not user_dir.is_dir():
-            continue
-        user_name = user_dir.name
-        for csv_path in sorted(user_dir.glob("*.csv")):
-            df = pd.read_csv(csv_path)
-            features = df[feature_cols].values.astype(np.float32)
-            if len(features) != seq_len:
-                if len(features) < seq_len:
-                    pad = np.zeros((seq_len - len(features), len(feature_cols)))
-                    features = np.vstack([features, pad])
-                else:
-                    features = features[:seq_len]
-            X_train.append(features)
-            y_train.append(int(df["label"].iloc[0]))
-            train_users.append(user_name)
-            train_file_ids.append(int(df["file_id"].iloc[0]))
-    
-    print("Loading test data...")
-    X_test, test_ids, test_users = [], [], []
-    
-    for user_dir in sorted(test_path.iterdir()):
-        if not user_dir.is_dir():
-            continue
-        user_name = user_dir.name
-        for csv_path in sorted(user_dir.glob("*.csv")):
-            df = pd.read_csv(csv_path)
-            features = df[feature_cols].values.astype(np.float32)
-            if len(features) != seq_len:
-                if len(features) < seq_len:
-                    pad = np.zeros((seq_len - len(features), len(feature_cols)))
-                    features = np.vstack([features, pad])
-                else:
-                    features = features[:seq_len]
-            X_test.append(features)
-            test_ids.append(int(df["file_id"].iloc[0]))
-            test_users.append(user_name)
-    
-    return (np.array(X_train), np.array(y_train), np.array(train_users), 
-            np.array(train_file_ids), np.array(X_test), np.array(test_ids), 
-            np.array(test_users))
+print("Loading NPZ data...")
+tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
+te = np.load(find_npz("test_data.npz"),  allow_pickle=True)
 
-X_train_raw, y_train, train_users, train_file_ids, X_test_raw, test_ids, test_users = load_csv_data(
-    "train/train", "test/test"
-)
+X_train_raw = np.nan_to_num(tr["X"].astype(np.float32), nan=0.0)
+y_train      = tr["y"].astype(np.int32)
+train_users  = tr["users"]
+X_test_raw   = np.nan_to_num(te["X"].astype(np.float32), nan=0.0)
+test_ids     = te["file_ids"]
+test_users   = te["users"]
 
 unique, counts = np.unique(y_train, return_counts=True)
 print(f"Train: {X_train_raw.shape}, Test: {X_test_raw.shape}")

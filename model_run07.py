@@ -1,7 +1,4 @@
-"""
-model_run07.py — Best-of-both feature set + regularized LightGBM
-
-"""
+# run07: best-of-both feature set + regularized LightGBM, 15 models, class boost
 
 import numpy as np
 import pandas as pd
@@ -15,17 +12,23 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, confusion_matrix
 import lightgbm as lgb
 
-OUT_DIR = Path("/kaggle/working") if Path("/kaggle/working").exists() \
-          else Path(__file__).parent / "outputs"
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
 def find_npz(name):
+    search_paths = [
+        Path("/kaggle/input/train-data") / name,
+        Path("/kaggle/input/test-data") / name,
+        Path("/kaggle/input") / name,
+    ]
+    for p in search_paths:
+        if p.exists():
+            return str(p)
     hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
-    if hits: return hits[0]
-    local = Path(__file__).parent / "outputs" / name
-    if local.exists(): return str(local)
-    raise FileNotFoundError(f"{name} not found")
+    if hits:
+        return hits[0]
+    raise FileNotFoundError(f"Cannot find {name}")
 
 print("Loading npz …")
 tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -106,73 +109,73 @@ def extract(X):
     mx,my,mz = X[:,:,0], X[:,:,1], X[:,:,2]
     sx,sy,sz = X[:,:,3], X[:,:,4], X[:,:,5]
 
-    # ── Gravity-free mean-channel signals ─────────────────────────────────────
-    # Jerk removes DC (gravity) at 1Hz: np.diff IS the correct high-pass filter.
+    # gravity-free mean-channel signals
+    # jerk removes DC (gravity) at 1Hz: np.diff IS the correct high-pass filter.
     jx = np.diff(mx, axis=1)
     jy = np.diff(my, axis=1)
     jz = np.diff(mz, axis=1)
 
-    # ── Rotation-invariant magnitudes ─────────────────────────────────────────
+    # rotation-invariant magnitudes
     mag_mean = np.sqrt(mx**2 + my**2 + mz**2)   # ≈ 1g static, deviates for motion
     mag_std  = np.sqrt(sx**2 + sy**2 + sz**2)   # total activity intensity
     mag_jerk = np.sqrt(jx**2 + jy**2 + jz**2)  # motion change intensity
 
     parts = []
 
-    # A. Std channels — all stats (9×3=27) ────────────────────────────────────
+    # A. std channels - all stats (9x3=27)
     for ch in [sx, sy, sz]:
         parts += stats9(ch)
 
-    # B. Std magnitude (9) ────────────────────────────────────────────────────
+    # B. std magnitude (9)
     parts += stats9(mag_std)
 
-    # C. Mean magnitude — keeps orientation-invariant gravity info (9) ─────────
+    # C. mean magnitude - keeps orientation-invariant gravity info (9)
     parts += stats9(mag_mean)
 
-    # D. Jerk per axis (9×3=27) ───────────────────────────────────────────────
+    # D. jerk per axis (9x3=27)
     for ch in [jx, jy, jz]:
         parts += stats9(ch)
 
-    # E. Jerk magnitude (9) ───────────────────────────────────────────────────
+    # E. jerk magnitude (9)
     parts += stats9(mag_jerk)
 
-    # F. Segments of mag_std, mag_jerk at 10 and 20 scales (80) ───────────────
+    # F. segments of mag_std, mag_jerk at 10 and 20 scales (80)
     for sig in [mag_std, mag_jerk]:
         for ns in [10, 20]:
             parts += seg(sig, ns)
 
-    # G. Segments of each std channel at scale 10 (60) ────────────────────────
+    # G. segments of each std channel at scale 10 (60)
     for ch in [sx, sy, sz]:
         parts += seg(ch, 10)
 
-    # H. Segments of each jerk channel at scale 10 (60) ──────────────────────
+    # H. segments of each jerk channel at scale 10 (60)
     for ch in [jx, jy, jz]:
         parts += seg(ch, 10)
 
-    # I. Autocorrelation: mag_jerk (7 lags) ───────────────────────────────────
+    # I. autocorrelation: mag_jerk (7 lags)
     for lag in [1, 2, 5, 10, 20, 30, 60]:
         parts.append(ac(mag_jerk, lag))
 
-    # J. Autocorrelation: std channels (4 lags × 3 = 12) ─────────────────────
+    # J. autocorrelation: std channels (4 lags x 3 = 12)
     for ch in [sx, sy, sz]:
         for lag in [1, 5, 10, 30]:
             parts.append(ac(ch, lag))
 
-    # K. Spectral: mag_jerk, mag_std, each std channel (5×5=25) ───────────────
+    # K. spectral: mag_jerk, mag_std, each std channel (5x5=25)
     for sig in [mag_jerk, mag_std, sx, sy, sz]:
         parts.append(spectral5(sig))
 
-    # L. Cross-correlations: jerk axes + std axes (6 pairs) ───────────────────
+    # L. cross-correlations: jerk axes + std axes (6 pairs)
     for a,b in [(jx,jy),(jx,jz),(jy,jz)]:
         parts.append(xcorr(a,b))
     for a,b in [(sx,sy),(sx,sz),(sy,sz)]:
         parts.append(xcorr(a,b))
 
-    # M. Zero-crossing rate of mag_jerk (1) ───────────────────────────────────
+    # M. zero-crossing rate of mag_jerk (1)
     cj = mag_jerk - mag_jerk.mean(1,keepdims=True)
     parts.append((np.diff(np.sign(cj),axis=1)!=0).sum(1)/T)
 
-    # N. Peak rate of mag_jerk (1) ────────────────────────────────────────────
+    # N. peak rate of mag_jerk (1)
     pr = np.zeros(N, dtype=np.float32)
     for n in range(N):
         pr[n] = len(find_peaks(mag_jerk[n], height=mag_jerk[n].mean())[0]) / T
@@ -272,7 +275,7 @@ preds = avg_proba_boosted.argmax(axis=1)
 print(f"  Trained {len(final_probas)} models")
 print(f"  Class freq boost factors: {np.round(boost, 2)}")
 
-# ── Save ───────────────────────────────────────────────────────────────────────
+# save
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out = OUT_DIR / "submission_run07.csv"

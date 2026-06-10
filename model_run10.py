@@ -1,7 +1,4 @@
-"""
-model_run12.py — Feature Selection + TCN Transformer + LightGBM Ensemble
-
-"""
+# run10: feature selection + TCN Transformer + LightGBM ensemble
 
 import numpy as np
 import pandas as pd
@@ -21,11 +18,8 @@ from torch.utils.data import DataLoader, TensorDataset
 import warnings
 warnings.filterwarnings('ignore')
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────────────────────────────────────
-OUT_DIR = Path("/kaggle/working") if Path("/kaggle/working").exists() \
-          else Path(__file__).parent / "outputs"
+# configuration
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {DEVICE}")
@@ -44,14 +38,20 @@ torch.manual_seed(SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(SEED)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Data Loading
-# ──────────────────────────────────────────────────────────────────────────────
+# data loading
 def find_npz(name):
+    search_paths = [
+        Path("/kaggle/input/train-data") / name,
+        Path("/kaggle/input/test-data") / name,
+        Path("/kaggle/input") / name,
+    ]
+    for p in search_paths:
+        if p.exists():
+            return str(p)
     hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
-    if hits: 
+    if hits:
         return hits[0]
-    raise FileNotFoundError(f"{name} not found")
+    raise FileNotFoundError(f"Cannot find {name}")
 
 print("Loading data...")
 tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -70,9 +70,7 @@ print(f"Train: {X_train_raw.shape} | Test: {X_test_raw.shape} | Users: {len(uniq
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_train)*100:.1f}%)")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Per-User Normalization
-# ──────────────────────────────────────────────────────────────────────────────
+# per-user normalization
 def user_normalize(X, user_ids):
     X_out = X.copy()
     for uid in np.unique(user_ids):
@@ -87,9 +85,7 @@ print("\nPer-user normalization...")
 X_train = user_normalize(X_train_raw, train_users)
 X_test = user_normalize(X_test_raw, test_users)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Enhanced Feature Extraction (373 features → will be reduced)
-# ──────────────────────────────────────────────────────────────────────────────
+# enhanced feature extraction (373 features, will be reduced)
 def stats9(s):
     """9 statistical features for each signal"""
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
@@ -203,9 +199,7 @@ def extract_features(X):
         else np.asarray(p).reshape(N, 1) for p in parts
     ]).astype(np.float32)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Multi-Stage Feature Selection
-# ──────────────────────────────────────────────────────────────────────────────
+# multi-stage feature selection
 print("\n" + "="*60)
 print("FEATURE SELECTION")
 print("="*60)
@@ -278,11 +272,9 @@ X_train_final = rfecv.transform(X_train_clean)
 X_test_final = rfecv.transform(X_test_clean)
 
 # Final feature count
-print(f"\n✅ Final feature count: {X_train_final.shape[1]} (from {X_train_features.shape[1]} original)")
+print(f"\nFinal feature count: {X_train_final.shape[1]} (from {X_train_features.shape[1]} original)")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Time Warping Augmentation for CNN
-# ──────────────────────────────────────────────────────────────────────────────
+# time warping augmentation for CNN
 def time_warp(x, sigma=0.2):
     """Non-linear time warping augmentation"""
     batch, seq_len, channels = x.shape
@@ -321,9 +313,7 @@ def augment_batch(x):
         return add_noise(x)
     return x
 
-# ──────────────────────────────────────────────────────────────────────────────
-# TCN + Transformer Model
-# ──────────────────────────────────────────────────────────────────────────────
+# TCN + Transformer model
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=5, dilation=1, dropout=0.2):
         super().__init__()
@@ -380,9 +370,7 @@ class TCNTransformer(nn.Module):
         x = x.mean(dim=1)
         return self.head(x)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Training Functions
-# ──────────────────────────────────────────────────────────────────────────────
+# training functions
 def train_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss = 0
@@ -410,9 +398,7 @@ def evaluate(model, loader, device):
             targets.append(y.cpu().numpy())
     return np.concatenate(predictions), np.concatenate(targets)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Cross-Validation to Find Optimal Ensemble Weights
-# ──────────────────────────────────────────────────────────────────────────────
+# cross-validation to find optimal ensemble weights
 print("\n" + "="*60)
 print("CROSS-VALIDATION FOR ENSEMBLE WEIGHTS")
 print("="*60)
@@ -518,9 +504,7 @@ for w in np.arange(0.1, 0.91, 0.05):
 print(f"Optimal CNN weight: {best_weight:.2f} (LGB weight: {1-best_weight:.2f})")
 print(f"Ensemble OOF Accuracy: {best_acc:.4f}")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Final Training on All Data
-# ──────────────────────────────────────────────────────────────────────────────
+# final training on all data
 print("\n" + "="*60)
 print("FINAL TRAINING ON ALL DATA")
 print("="*60)
@@ -598,7 +582,7 @@ out_path = OUT_DIR / "submission_run10.csv"
 submission.to_csv(out_path, index=False)
 
 print(f"\n{'='*60}")
-print(f"✅ Submission saved: {out_path}")
+print(f"Submission saved: {out_path}")
 print(f"{'='*60}")
 
 # Summary

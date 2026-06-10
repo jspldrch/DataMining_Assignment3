@@ -26,10 +26,9 @@ print(f"Output dir: {OUT_DIR}")
 # load data
 def find_npz(name):
     search_paths = [
-        Path("/kaggle/input") / name,
         Path("/kaggle/input/train-data") / name,
         Path("/kaggle/input/test-data") / name,
-        Path("/kaggle/input/har-data") / name,
+        Path("/kaggle/input") / name,
     ]
     for path in search_paths:
         if path.exists():
@@ -37,7 +36,7 @@ def find_npz(name):
     hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
     if hits:
         return hits[0]
-    raise FileNotFoundError(f"Cannot find {name} in /kaggle/input/")
+    raise FileNotFoundError(f"Cannot find {name}")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)

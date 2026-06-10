@@ -1,11 +1,4 @@
-"""
-model_run04.py — same as model_run03 but loads from npz files instead of CSVs.
-Steps:
-  1. Run convert_to_npz.py locally to create train_data.npz and test_data.npz
-  2. Upload both npz files to Kaggle as a dataset
-  3. Run this script on Kaggle
-Output: submission_run04.csv
-"""
+# run04: same as run03, loads from npz files instead of CSVs
 
 import numpy as np
 import pandas as pd
@@ -29,36 +22,19 @@ except ImportError:
     HAS_LGB = False
     print("LightGBM not found — running CNN only. pip install lightgbm")
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
-def _find_base_dir():
-    kaggle_input = Path("/kaggle/input")
-    if kaggle_input.exists():
-        for comp_dir in kaggle_input.iterdir():
-            if (comp_dir / "train" / "train").exists():
-                return comp_dir, Path("/kaggle/working")
-    try:
-        import google.colab
-        p = Path("/content/DataMining_Assignment3")
-        return p, p / "outputs"
-    except ImportError:
-        pass
-    p = Path(__file__).parent
-    return p, p / "outputs"
-
-BASE_DIR, OUT_DIR = _find_base_dir()
+# paths
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 DEVICE    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 FEAT_COLS = ["mean_x", "mean_y", "mean_z", "std_x", "std_y", "std_z"]
-print(f"BASE_DIR : {BASE_DIR}")
+print(f"Output dir: {OUT_DIR}")
 print(f"Device   : {DEVICE}")
 
 # 1. LOAD NPZ FILES
 
-# ── Change these two lines to match the exact paths shown by your debug cell ──
 TRAIN_NPZ = "/kaggle/input/train-data/train_data.npz"
 TEST_NPZ  = "/kaggle/input/test-data/test_data.npz"
-# ─────────────────────────────────────────────────────────────────────────────
 
 print("Loading data from npz …")
 print(f"  Train: {TRAIN_NPZ}")

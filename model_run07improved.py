@@ -1,10 +1,8 @@
-"""
-model_run16_fixed.py — Based on run15 but with LESS aggressive feature selection
-
-"""
+# run07improved: run07 features + gentle feature selection (top 50%), class boost
 
 import numpy as np
 import pandas as pd
+import glob
 from pathlib import Path
 from scipy.stats import skew, kurtosis
 from scipy.signal import welch, find_peaks
@@ -15,86 +13,44 @@ import lightgbm as lgb
 import warnings
 warnings.filterwarnings('ignore')
 
-# Configuration
-OUT_DIR = Path("outputs")
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
 SEED = 42
 np.random.seed(SEED)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# LOAD DATA (same as before)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("LOADING ORIGINAL CSV DATA")
-print("="*60)
+def find_npz(name):
+    search_paths = [
+        Path("/kaggle/input/train-data") / name,
+        Path("/kaggle/input/test-data") / name,
+        Path("/kaggle/input") / name,
+    ]
+    for path in search_paths:
+        if path.exists():
+            return str(path)
+    hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
+    if hits:
+        return hits[0]
+    raise FileNotFoundError(f"Cannot find {name}")
 
-def load_csv_data(train_path, test_path):
-    train_path = Path(train_path)
-    test_path = Path(test_path)
-    feature_cols = ["mean_x", "mean_y", "mean_z", "std_x", "std_y", "std_z"]
-    seq_len = 300
-    
-    # Load training data
-    print("Loading training data...")
-    X_train, y_train, train_users, train_file_ids = [], [], [], []
-    
-    for user_dir in sorted(train_path.iterdir()):
-        if not user_dir.is_dir():
-            continue
-        user_name = user_dir.name
-        for csv_path in sorted(user_dir.glob("*.csv")):
-            df = pd.read_csv(csv_path)
-            features = df[feature_cols].values.astype(np.float32)
-            if len(features) != seq_len:
-                if len(features) < seq_len:
-                    pad = np.zeros((seq_len - len(features), len(feature_cols)))
-                    features = np.vstack([features, pad])
-                else:
-                    features = features[:seq_len]
-            X_train.append(features)
-            y_train.append(int(df["label"].iloc[0]))
-            train_users.append(user_name)
-            train_file_ids.append(int(df["file_id"].iloc[0]))
-    
-    # Load test data
-    print("Loading test data...")
-    X_test, test_ids, test_users = [], [], []
-    
-    for user_dir in sorted(test_path.iterdir()):
-        if not user_dir.is_dir():
-            continue
-        user_name = user_dir.name
-        for csv_path in sorted(user_dir.glob("*.csv")):
-            df = pd.read_csv(csv_path)
-            features = df[feature_cols].values.astype(np.float32)
-            if len(features) != seq_len:
-                if len(features) < seq_len:
-                    pad = np.zeros((seq_len - len(features), len(feature_cols)))
-                    features = np.vstack([features, pad])
-                else:
-                    features = features[:seq_len]
-            X_test.append(features)
-            test_ids.append(int(df["file_id"].iloc[0]))
-            test_users.append(user_name)
-    
-    return (np.array(X_train), np.array(y_train), np.array(train_users), 
-            np.array(train_file_ids), np.array(X_test), np.array(test_ids), 
-            np.array(test_users))
+print("Loading NPZ data...")
+tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
+te = np.load(find_npz("test_data.npz"),  allow_pickle=True)
 
-X_train_raw, y_train, train_users, train_file_ids, X_test_raw, test_ids, test_users = load_csv_data(
-    "train/train", "test/test"
-)
+X_train_raw = np.nan_to_num(tr["X"].astype(np.float32), nan=0.0)
+y_train      = tr["y"].astype(np.int32)
+train_users  = tr["users"]
+X_test_raw   = np.nan_to_num(te["X"].astype(np.float32), nan=0.0)
+test_ids     = te["file_ids"]
+test_users   = te["users"]
 
 unique, counts = np.unique(y_train, return_counts=True)
 print(f"Train: {X_train_raw.shape}, Test: {X_test_raw.shape}")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_train)*100:.1f}%)")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PER-USER NORMALIZATION
-# ──────────────────────────────────────────────────────────────────────────────
+# per-user normalization
 def user_normalize(X, user_ids):
     X_out = X.copy()
     for uid in np.unique(user_ids):
@@ -110,9 +66,7 @@ print("\nPer-user normalization...")
 X_train = user_normalize(X_train_raw, train_users)
 X_test = user_normalize(X_test_raw, test_users)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION (same as run07)
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction (same as run07)
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s,1),
@@ -220,9 +174,7 @@ scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train_feat)
 X_test_scaled = scaler.transform(X_test_feat)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GENTLE FEATURE SELECTION (Keep 150-200 features, not 50!)
-# ──────────────────────────────────────────────────────────────────────────────
+# gentle feature selection (keep 150-200 features, not 50)
 print("\n" + "="*60)
 print("GENTLE FEATURE SELECTION")
 print("="*60)
@@ -259,9 +211,7 @@ print(f"Reduction: {(1 - X_train_selected.shape[1]/original_count)*100:.1f}%")
 X_train_final = X_train_selected
 X_test_final = X_test_selected
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CROSS-VALIDATION
-# ──────────────────────────────────────────────────────────────────────────────
+# cross-validation
 print("\n" + "="*60)
 print("LEAVE-USER-OUT CROSS-VALIDATION")
 print("="*60)
@@ -346,7 +296,7 @@ submission = submission.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run07improved.csv"
 submission.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
+print(f"\nSubmission saved: {out_path}")
 print("\nPrediction distribution:")
 for c in range(6):
     count = np.sum(preds == c)

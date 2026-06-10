@@ -32,17 +32,16 @@ CLASS_NAMES = ["sit/stand", "walk_flat", "walk_down", "walk_up", "running", "oth
 # load data
 def find_npz(name):
     search_paths = [
-        Path("/kaggle/input") / name,
         Path("/kaggle/input/train-data") / name,
         Path("/kaggle/input/test-data") / name,
-        Path("/kaggle/input/har-data") / name,
+        Path("/kaggle/input") / name,
     ]
     for path in search_paths:
-        if path.exists(): return str(path)
+        if path.exists():
+            return str(path)
     hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
-    if hits: return hits[0]
-    local = Path(__file__).parent / "outputs" / name
-    if local.exists(): return str(local)
+    if hits:
+        return hits[0]
     raise FileNotFoundError(f"Cannot find {name}")
 
 print("loading data...")

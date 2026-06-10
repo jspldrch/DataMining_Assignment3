@@ -1,7 +1,4 @@
-"""
-model_run12.py — SIMPLIFIED version based on run08 learnings
-
-"""
+# run11: simplified run08, run07 features + 2 new features, feature selection, 15 models
 
 import numpy as np
 import pandas as pd
@@ -16,46 +13,33 @@ import lightgbm as lgb
 import warnings
 warnings.filterwarnings('ignore')
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────────────────────────────────────
-# Set paths for loading npz files
-# Option 1: If running on Kaggle with uploaded npz files
-KAGGLE_INPUT = Path("/kaggle/input")
-# Option 2: If running locally with npz in outputs folder
-LOCAL_OUTPUT = Path(__file__).parent / "outputs"
-
-# Auto-detect where npz files are
-def find_npz_file(filename):
-    """Search for npz file in common locations"""
-    # Check Kaggle input first
-    if KAGGLE_INPUT.exists():
-        for path in KAGGLE_INPUT.rglob(filename):
-            if path.name == filename:
-                return path
-    
-    # Check local outputs folder
-    npz_path = LOCAL_OUTPUT / filename
-    if npz_path.exists():
-        return npz_path
-    
-    # Check current directory
-    if Path(filename).exists():
-        return Path(filename)
-    
-    raise FileNotFoundError(f"Cannot find {filename} in /kaggle/input, outputs/, or current directory")
+# configuration
+import glob
 
 # Output directory
-OUT_DIR = Path("/kaggle/working") if Path("/kaggle/working").exists() else LOCAL_OUTPUT
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
+
+def find_npz_file(filename):
+    """Search for npz file in Kaggle input directories"""
+    search_paths = [
+        Path("/kaggle/input/train-data") / filename,
+        Path("/kaggle/input/test-data") / filename,
+        Path("/kaggle/input") / filename,
+    ]
+    for p in search_paths:
+        if p.exists():
+            return p
+    hits = glob.glob(f"/kaggle/input/**/{filename}", recursive=True)
+    if hits:
+        return Path(hits[0])
+    raise FileNotFoundError(f"Cannot find {filename}")
 
 SEED = 42
 np.random.seed(SEED)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Data Loading from NPZ Files
-# ──────────────────────────────────────────────────────────────────────────────
+# data loading from NPZ files
 print("="*60)
 print("LOADING DATA FROM NPZ FILES")
 print("="*60)
@@ -87,9 +71,7 @@ print(f"\nClass distribution:")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_train)*100:.1f}%)")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Per-User Normalization (same as run07 - it works!)
-# ──────────────────────────────────────────────────────────────────────────────
+# per-user normalization (same as run07)
 def user_normalize(X, user_ids):
     """Normalize each user's windows by that user's global mean and std"""
     X_out = X.copy()
@@ -108,10 +90,7 @@ X_train = user_normalize(X_train_raw, train_users)
 X_test = user_normalize(X_test_raw, test_users)
 print("  Normalization complete")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Feature Extraction (run07 features + ONLY 2 safe new features)
-# NO feature explosion! Target: ~250 features max
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction (run07 features + 2 safe new features, target ~250 max)
 def stats9(s):
     """9 statistical features for each signal"""
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
@@ -264,9 +243,7 @@ def extract_features(X):
     
     return result
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Feature Extraction with Selection
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction with selection
 print("\n" + "="*60)
 print("FEATURE EXTRACTION")
 print("="*60)
@@ -299,9 +276,7 @@ print(f"  Original features: {X_train_feat.shape[1]}")
 print(f"  Selected features: {X_train_selected.shape[1]}")
 print(f"  Reduction: {(1 - X_train_selected.shape[1]/X_train_feat.shape[1])*100:.1f}%")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Training with Cross-Validation (User-based, like run07)
-# ──────────────────────────────────────────────────────────────────────────────
+# training with cross-validation (user-based, like run07)
 print("\n" + "="*60)
 print("LEAVE-USER-OUT CROSS-VALIDATION")
 print("="*60)
@@ -357,9 +332,7 @@ print(f"Ensemble OOF accuracy: {ensemble_acc:.4f}")
 print(f"Mean fold accuracy: {np.mean(fold_accs):.4f} (+/- {np.std(fold_accs):.4f})")
 print(f"{'='*40}")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Final Training on All Data
-# ──────────────────────────────────────────────────────────────────────────────
+# final training on all data
 print("\n" + "="*60)
 print("FINAL TRAINING ON ALL DATA")
 print("="*60)
@@ -431,9 +404,7 @@ print("\nFinal prediction distribution:")
 for c in range(6):
     print(f"  Class {c}: {np.sum(final_preds == c):5d}")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Save Submission
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 print("\n" + "="*60)
 print("SAVING SUBMISSION")
 print("="*60)
@@ -443,7 +414,7 @@ submission = submission.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run12.csv"
 submission.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved to: {out_path}")
+print(f"\nSubmission saved to: {out_path}")
 print(f"   File size: {out_path.stat().st_size / 1024:.1f} KB")
 
 # Optional: Save a backup with timestamp
@@ -468,7 +439,7 @@ print(f"Selected features: {X_train_selected.shape[1]}")
 print(f"Feature reduction: {(1 - X_train_selected.shape[1]/X_train_feat.shape[1])*100:.1f}%")
 print(f"CV ensemble accuracy: {ensemble_acc:.4f}")
 print(f"Number of models in ensemble: {len(final_models)}")
-print(f"\n✅ Done! Submit {out_path} to Kaggle")
+print(f"\nDone. Submit {out_path} to Kaggle")
 print(f"Expected score: 0.775-0.785")
 print("="*60)
 

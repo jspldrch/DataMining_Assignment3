@@ -1,7 +1,4 @@
-"""
-model_run08.py — run07 + TTA + minority oversampling
-
-"""
+# run08: run07 features + TTA (5 time shifts), oversampling disabled
 
 import numpy as np
 import pandas as pd
@@ -15,17 +12,23 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, confusion_matrix
 import lightgbm as lgb
 
-OUT_DIR = Path("/kaggle/working") if Path("/kaggle/working").exists() \
-          else Path(__file__).parent / "outputs"
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
 def find_npz(name):
+    search_paths = [
+        Path("/kaggle/input/train-data") / name,
+        Path("/kaggle/input/test-data") / name,
+        Path("/kaggle/input") / name,
+    ]
+    for p in search_paths:
+        if p.exists():
+            return str(p)
     hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
-    if hits: return hits[0]
-    local = Path(__file__).parent / "outputs" / name
-    if local.exists(): return str(local)
-    raise FileNotFoundError(f"{name} not found")
+    if hits:
+        return hits[0]
+    raise FileNotFoundError(f"Cannot find {name}")
 
 print("Loading npz …")
 tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -77,7 +80,7 @@ def oversample(X, y, user_ids, targets={2: 700, 4: 500}):
         X_aug.append(X[chosen] + noise)
         y_aug.append(np.full(needed, cls, dtype=np.int32))
         u_aug.append(user_ids[chosen])
-        print(f"  Class {cls}: {len(idx)} → {len(idx)+needed} samples")
+        print(f"  Class {cls}: {len(idx)} -> {len(idx)+needed} samples")
     return (np.vstack(X_aug), np.concatenate(y_aug),
             np.concatenate(u_aug))
 
@@ -183,7 +186,7 @@ def extract(X):
 
     parts = []
 
-    # ── Existing run07 features ───────────────────────────────────────────────
+    # existing run07 features
     for ch in [sx,sy,sz]:              parts += stats9(ch)
     parts += stats9(mag_std)
     parts += stats9(mag_mean)
@@ -206,37 +209,37 @@ def extract(X):
         pr[n] = len(find_peaks(mag_jerk[n],height=mag_jerk[n].mean())[0])/T
     parts.append(pr)
 
-    # ── NEW: per-user-normalised mean channels (deviation from user baseline) ─
-    # After user normalisation, these encode "how different is this window
-    # from this user's typical position" → activity-specific.
+    # new: per-user-normalised mean channels (deviation from user baseline)
+    # after user normalisation, these encode "how different is this window
+    # from this user's typical position" - activity-specific.
     for ch in [mx,my,mz]:             parts += stats9(ch)
 
-    # ── NEW: second-order jerk (snap) ────────────────────────────────────────
+    # new: second-order jerk (snap)
     parts += stats9(mag_snap)
     for ch in [snx,sny,snz]:          parts += stats9(ch)
 
-    # ── NEW: permutation entropy (regularity) ─────────────────────────────────
-    # Low entropy = regular (walking), high = irregular (random motion)
+    # new: permutation entropy (regularity)
+    # low entropy = regular (walking), high = irregular (random motion)
     for sig in [mag_jerk, mag_std, mx, my, mz]:
         parts.append(perm_entropy(sig))
 
-    # ── NEW: wavelet energy per level ─────────────────────────────────────────
+    # new: wavelet energy per level
     for sig in [mag_jerk, mag_std]:
         parts.append(wavelet_energy(sig))
 
-    # ── NEW: segment slopes (local trends within each 15s sub-window) ────────
+    # new: segment slopes (local trends within each 15s sub-window)
     for sig in [mag_jerk, mag_std]:
         parts.append(seg_slopes(sig, n_seg=20))
 
-    # ── NEW: inter-segment variability ────────────────────────────────────────
+    # new: inter-segment variability
     for sig in [mag_jerk, mag_std, sx, sy, sz]:
         parts.append(interseg_var(sig, n_seg=10))
 
-    # ── NEW: additional autocorrelation lags for mag_std ─────────────────────
+    # new: additional autocorrelation lags for mag_std
     for lag in [2, 5, 15, 20, 45]:
         parts.append(ac(mag_std, lag))
 
-    # ── NEW: percentile features ──────────────────────────────────────────────
+    # new: percentile features
     for sig in [mag_jerk, mag_std]:
         for pct in [10, 25, 75, 90]:
             parts.append(np.percentile(sig, pct, axis=1))

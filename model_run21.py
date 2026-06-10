@@ -7,17 +7,23 @@ import seaborn as sns
 import glob
 from pathlib import Path
 
-OUT_DIR = Path("/kaggle/working") if Path("/kaggle/working").exists() \
-          else Path(__file__).parent / "outputs"
+OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
 def find_npz(name):
+    search_paths = [
+        Path("/kaggle/input/train-data") / name,
+        Path("/kaggle/input/test-data") / name,
+        Path("/kaggle/input") / name,
+    ]
+    for p in search_paths:
+        if p.exists():
+            return str(p)
     hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
-    if hits: return hits[0]
-    local = Path(__file__).parent / "outputs" / name
-    if local.exists(): return str(local)
-    raise FileNotFoundError(f"{name} not found")
+    if hits:
+        return hits[0]
+    raise FileNotFoundError(f"Cannot find {name}")
 
 tr     = np.load(find_npz("train_data.npz"), allow_pickle=True)
 X_tr   = np.nan_to_num(tr["X"].astype(np.float32), nan=0.0)
