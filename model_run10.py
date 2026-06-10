@@ -1,12 +1,6 @@
 """
 model_run12.py — Feature Selection + TCN Transformer + LightGBM Ensemble
-Target: 0.79-0.81
 
-Key improvements:
-  1. Multi-stage feature selection (LGBM importance + correlation removal)
-  2. TCN + Transformer for deep temporal learning
-  3. Optimal ensemble weighting via cross-validation
-  4. Reduced overfitting through feature pruning
 """
 
 import numpy as np
@@ -596,9 +590,8 @@ for c in range(6):
     expected = int(len(final_preds) * counts[c] / len(y_train))
     print(f"  Class {c}: {pred_counts.get(c, 0):5d} (expected: {expected:5d})")
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Save Submission
-# ──────────────────────────────────────────────────────────────────────────────
+
 submission = pd.DataFrame({"Id": test_ids, "Label": final_preds})
 submission = submission.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run10.csv"

@@ -1,17 +1,6 @@
 """
 model_run13.py — REACH FOR 0.83 with ORIGINAL CSV DATA
-Complete paradigm shift from previous attempts
 
-Key changes:
-  1. Loads original CSV files (not aggregated NPZ)
-  2. NO per-user normalization (leaks user identity)
-  3. Pure deep learning with InceptionTime architecture
-  4. Mixup augmentation between different users
-  5. Pseudo-labeling with confidence threshold
-  6. Stratified user splits
-  7. Test-time augmentation with proper time warping
-
-Expected score: 0.81-0.83
 """
 
 import numpy as np
@@ -31,9 +20,8 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Configuration
-# ──────────────────────────────────────────────────────────────────────────────
+
 class Config:
     # Paths
     TRAIN_PATH = Path("train/train")  # Original train folder with CSV files
@@ -70,9 +58,7 @@ torch.manual_seed(cfg.SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(cfg.SEED)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Data Loading from Original CSV Files
-# ──────────────────────────────────────────────────────────────────────────────
+
 class HARDataLoader:
     def __init__(self, train_path, test_path, seq_len=300, feature_cols=None):
         self.train_path = Path(train_path)
@@ -185,9 +171,8 @@ print("\nClass distribution:")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_train)*100:.1f}%)")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Data Preprocessing (Global Normalization - NO per-user normalization!)
-# ──────────────────────────────────────────────────────────────────────────────
+# Data Preprocessing
+
 print("\n" + "="*60)
 print("DATA PREPROCESSING")
 print("="*60)
@@ -210,9 +195,6 @@ y_train_tensor = torch.tensor(y_train, dtype=torch.long)
 print(f"Train tensor shape: {X_train_tensor.shape}")
 print(f"Test tensor shape: {X_test_tensor.shape}")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# InceptionTime Architecture (SOTA for time series)
-# ──────────────────────────────────────────────────────────────────────────────
 class InceptionBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_sizes=[5, 10, 20, 40]):
         super().__init__()
@@ -277,9 +259,6 @@ class InceptionTime(nn.Module):
         x = self.dropout(x)
         return self.fc(x)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Mixup Augmentation
-# ──────────────────────────────────────────────────────────────────────────────
 def mixup_data(x, y, alpha=0.4):
     """Mixup augmentation: blend two random samples"""
     if alpha > 0:
@@ -298,9 +277,6 @@ def mixup_data(x, y, alpha=0.4):
 def mixup_criterion(criterion, pred, y_a, y_b, lam):
     return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Label Smoothing Loss
-# ──────────────────────────────────────────────────────────────────────────────
 class LabelSmoothingCrossEntropy(nn.Module):
     def __init__(self, smoothing=0.1):
         super().__init__()
@@ -313,9 +289,6 @@ class LabelSmoothingCrossEntropy(nn.Module):
         log_probs = F.log_softmax(pred, dim=1)
         return -(target * log_probs).sum(dim=1).mean()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Training Function
-# ──────────────────────────────────────────────────────────────────────────────
 def train_epoch(model, loader, optimizer, criterion, device, mixup_alpha=0.4):
     model.train()
     total_loss = 0

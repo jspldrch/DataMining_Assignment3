@@ -53,9 +53,8 @@ FEAT_COLS = ["mean_x", "mean_y", "mean_z", "std_x", "std_y", "std_z"]
 print(f"BASE_DIR : {BASE_DIR}")
 print(f"Device   : {DEVICE}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 1. LOAD NPZ FILES
+
 # ── Change these two lines to match the exact paths shown by your debug cell ──
 TRAIN_NPZ = "/kaggle/input/train-data/train_data.npz"
 TEST_NPZ  = "/kaggle/input/test-data/test_data.npz"
@@ -86,10 +85,8 @@ print(f"  Training users: {len(unique_users)}")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_train)*100:.1f}%)")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 2. WITHIN-WINDOW NORMALISATION
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def window_normalise(X: np.ndarray) -> np.ndarray:
     mu  = X.mean(axis=1, keepdims=True)
@@ -99,10 +96,7 @@ def window_normalise(X: np.ndarray) -> np.ndarray:
 X_train_norm = window_normalise(X_train_raw)
 X_test_norm  = window_normalise(X_test_raw)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 3. 1D-CNN
-# ══════════════════════════════════════════════════════════════════════════════
 
 class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch, kernel, pool=2):
@@ -197,10 +191,7 @@ def predict_proba_cnn(model, X: np.ndarray) -> np.ndarray:
     Xt = torch.tensor(X.transpose(0, 2, 1), dtype=torch.float32).to(DEVICE)
     return torch.softmax(model(Xt), dim=1).cpu().numpy()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 4. LIGHTGBM FEATURES
-# ══════════════════════════════════════════════════════════════════════════════
 
 def extract_features(X: np.ndarray) -> np.ndarray:
     N, T, C = X.shape
@@ -273,9 +264,7 @@ X_te_sc   = scaler.transform(X_te_feat)
 print(f"  Feature matrix: {X_tr_sc.shape}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # 5. LEAVE-USER-OUT CV
-# ══════════════════════════════════════════════════════════════════════════════
 
 print("\n" + "="*60)
 print("LEAVE-USER-OUT CV")
@@ -315,9 +304,7 @@ if HAS_LGB:
     print(f"  LightGBM : {lgb_acc:.4f}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # 6. FINAL TRAINING + ENSEMBLE PREDICTION
-# ══════════════════════════════════════════════════════════════════════════════
 
 print("\n" + "="*60)
 print("FINAL TRAINING ON ALL DATA")
@@ -342,10 +329,7 @@ else:
 
 preds = final_proba.argmax(axis=1)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 7. SAVE OUTPUTS
-# ══════════════════════════════════════════════════════════════════════════════
 
 submission = pd.DataFrame({"Id": test_ids, "Label": preds})
 submission = submission.sort_values("Id").reset_index(drop=True)

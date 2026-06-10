@@ -1,12 +1,6 @@
 """
 model_run08.py — Improved from run07 (0.7707) with:
-  1. SMOTE oversampling for rare classes (2 and 4)
-  2. Reduced ensemble size (less overfitting)
-  3. Stronger regularization
-  4. Fixed per-user normalization in CV (realistic validation)
-  5. Optional CNN with Focal Loss (uncomment to use)
-
-Expected improvement: 0.7707 → 0.79-0.80
+  
 """
 
 import numpy as np
@@ -64,10 +58,7 @@ for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. PER-USER NORMALISATION (FIXED VERSION)
-#    Computes stats from training users only during CV
-# ══════════════════════════════════════════════════════════════════════════════
+# 1. PER-USER NORMALISATION 
 
 def user_normalise_all(X, user_ids):
     """Normalize using all users' stats (for final training only)"""
@@ -90,9 +81,7 @@ def user_normalise_cv(X, user_ids, train_users):
     return (X - mu) / sig
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. FEATURE EXTRACTION (SAME AS RUN07)
-# ══════════════════════════════════════════════════════════════════════════════
+# 2. FEATURE EXTRACTION 
 
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
@@ -202,9 +191,7 @@ def extract_features(X):
     ]).astype(np.float32)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. CNN WITH FOCAL LOSS (OPTIONAL - UNCOMMENT TO USE)
-# ══════════════════════════════════════════════════════════════════════════════
+# 3. CNN WITH FOCAL LOSS
 
 class FocalLoss(nn.Module):
     def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
@@ -265,9 +252,7 @@ if USE_CNN:
     X_tr_cnn_resampled = cnn_flat_resampled.reshape(-1, 300, 6)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # 4. PREPARE FEATURES WITH SMOTE
-# ══════════════════════════════════════════════════════════════════════════════
 
 print("\nExtracting features...")
 X_tr_feat = extract_features(X_tr_raw)
@@ -293,9 +278,7 @@ for c, cnt in zip(balanced_counts[0], balanced_counts[1]):
     print(f"    Class {c}: {cnt}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. LEAVE-USER-OUT CV (WITHOUT DATA LEAKAGE)
-# ══════════════════════════════════════════════════════════════════════════════
+# 5. LEAVE-USER-OUT CV 
 
 print("\n" + "="*60)
 print("LEAVE-USER-OUT CV (Fixed - no leakage)")
@@ -363,9 +346,7 @@ for fold, (tr_idx, va_idx) in enumerate(skf.split(X_tr_feat, y_tr)):
 print(f"\nOverall LOO-CV accuracy: {np.mean(fold_accs):.4f} (+/- {np.std(fold_accs):.4f})")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # 6. FINAL TRAINING ON ALL DATA
-# ══════════════════════════════════════════════════════════════════════════════
 
 print("\n" + "="*60)
 print("FINAL TRAINING ON ALL DATA")
@@ -430,9 +411,7 @@ for c in range(6):
     print(f"  Class {c}: {count} ({count/len(preds)*100:.1f}%)")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # 7. SAVE SUBMISSION
-# ══════════════════════════════════════════════════════════════════════════════
 
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)

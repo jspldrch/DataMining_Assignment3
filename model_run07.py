@@ -1,19 +1,6 @@
 """
 model_run07.py — Best-of-both feature set + regularized LightGBM
 
-Incorporates valid feedback from run06 review:
-  - run06 removed mean_x/y/z entirely (too aggressive) → add them back
-    as JERK (gravity removed via differentiation, valid at 1Hz)
-    AND as MAGNITUDE (rotation-invariant) — not raw values
-  - Simpler, more regularized LightGBM (fewer trees, stronger L1/L2)
-    to reduce memorisation of training-user patterns
-  - No CNN (consistently hurt Kaggle score in run03/04)
-
-Note on Butterworth filter: at 1Hz sampling, Nyquist=0.5Hz, a 0.4Hz
-cutoff removes everything useful. Jerk = np.diff() IS the correct
-high-pass filter for 1Hz data (removes DC gravity component).
-
-Output: submission_run07.csv → /kaggle/working/
 """
 
 import numpy as np
@@ -57,16 +44,7 @@ print(f"Train {X_tr.shape}  Test {X_te.shape}  Users {len(unique_users)}")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # PER-USER NORMALISATION
-# Each user's windows are normalised by THAT USER'S own global mean and std
-# computed across ALL their windows and timesteps.
-# At test time we do the same with the test users' own windows.
-# This is more principled than window-level normalisation because it removes
-# the user-specific DC offset while preserving differences between windows
-# of the SAME user (which encode the activity).
-# ══════════════════════════════════════════════════════════════════════════════
 
 def user_normalise(X, user_ids):
     X_out = X.copy()
@@ -83,10 +61,7 @@ X_tr = user_normalise(X_tr, users)
 X_te = user_normalise(X_te, te_users)
 print("  Done.")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# FEATURES
-# ══════════════════════════════════════════════════════════════════════════════
+#features
 
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
@@ -221,9 +196,7 @@ X_tr_sc = scaler.fit_transform(X_tr_feat)
 X_te_sc = scaler.transform(X_te_feat)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LEAVE-USER-OUT CV  (one fold per user group — same as run06)
-# ══════════════════════════════════════════════════════════════════════════════
+# LEAVE-USER-OUT CV 
 
 print("\n" + "="*60)
 print("LEAVE-USER-OUT CV")
@@ -264,10 +237,7 @@ for fold in range(5):
 loo_acc = accuracy_score(y_tr, loo_preds)
 print(f"\nOverall LOO-CV accuracy: {loo_acc:.4f}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # FINAL TRAINING
-# ══════════════════════════════════════════════════════════════════════════════
 
 print("\n" + "="*60)
 print("FINAL TRAINING ON ALL DATA")

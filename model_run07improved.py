@@ -1,7 +1,6 @@
 """
 model_run16_fixed.py — Based on run15 but with LESS aggressive feature selection
-Key fix: Keep more features (target 150-200, not 50)
-Expected score: 0.775-0.785
+
 """
 
 import numpy as np
@@ -307,9 +306,7 @@ for fold in range(5):
 loo_acc = accuracy_score(y_train, loo_preds)
 print(f"\nOverall LOO-CV Accuracy: {loo_acc:.4f}")
 
-# ──────────────────────────────────────────────────────────────────────────────
 # FINAL TRAINING
-# ──────────────────────────────────────────────────────────────────────────────
 print("\n" + "="*60)
 print("FINAL TRAINING")
 print("="*60)
@@ -343,9 +340,7 @@ avg_proba_boosted /= avg_proba_boosted.sum(axis=1, keepdims=True)
 
 preds = avg_proba_boosted.argmax(axis=1)
 
-# ──────────────────────────────────────────────────────────────────────────────
 # SAVE
-# ──────────────────────────────────────────────────────────────────────────────
 submission = pd.DataFrame({"Id": test_ids, "Label": preds})
 submission = submission.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run07improved.csv"

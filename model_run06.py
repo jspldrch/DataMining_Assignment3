@@ -1,20 +1,6 @@
 """
 model_run06.py — Physics-informed user-invariant features + LightGBM ensemble
 
-Root cause of LOO-CV vs Kaggle gap:
-  mean_x, mean_y, mean_z contain the GRAVITY COMPONENT, which depends on
-  phone placement (orientation). Different users → different phone placement
-  → model memorises phone orientation instead of activity.
-
-Fix: build ONLY user-invariant features:
-  1. JERK (d/dt of mean channels): gravity is constant → derivative = 0
-     So jerk captures pure motion, not phone orientation.
-  2. MAGNITUDE |mean| = sqrt(mean_x²+mean_y²+mean_z²): invariant to rotation
-  3. STD channels (std_x/y/z): variability already removes DC offset
-  4. MAGNITUDE |std| = sqrt(std_x²+std_y²+std_z²): total activity intensity
-
-No within-window normalisation (it removes discriminative signal).
-Output: submission_run06.csv → saved directly to /kaggle/working/
 """
 
 import numpy as np
@@ -60,9 +46,7 @@ for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FEATURE EXTRACTION — user-invariant only
-# ══════════════════════════════════════════════════════════════════════════════
+## FEATURE EXTRACTION
 
 def stats9(s):
     """9 statistics for a (N, T) signal array."""
@@ -209,9 +193,7 @@ X_tr_sc  = scaler.fit_transform(X_tr_feat)
 X_te_sc  = scaler.transform(X_te_feat)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # LEAVE-USER-OUT CV
-# ══════════════════════════════════════════════════════════════════════════════
 
 print("\n" + "="*60)
 print("LEAVE-USER-OUT CV  (5 user-folds)")
@@ -250,9 +232,7 @@ loo_acc = accuracy_score(y_tr, loo_preds)
 print(f"\nOverall LOO-CV accuracy: {loo_acc:.4f}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # FINAL TRAINING + PREDICTION
-# ══════════════════════════════════════════════════════════════════════════════
 
 print("\n" + "="*60)
 print("FINAL TRAINING ON ALL DATA")
@@ -272,10 +252,7 @@ for seed in range(5):
 preds = np.mean(final_probas, axis=0).argmax(axis=1)
 print(f"  Trained {len(final_probas)} models")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # SAVE OUTPUT DIRECTLY TO /kaggle/working
-# ══════════════════════════════════════════════════════════════════════════════
 
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)

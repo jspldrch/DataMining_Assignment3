@@ -1,20 +1,6 @@
 """
 model_run08.py — run07 + TTA + minority oversampling
 
-Progress so far (LOO-CV gap shrinking = less overfitting to training users):
-  run05: LOO-CV 0.8874  Kaggle 0.7337  gap 0.154
-  run06: LOO-CV 0.8824  Kaggle 0.7501  gap 0.132
-  run07: LOO-CV 0.8698  Kaggle 0.7707  gap 0.099  ← best
-
-New in run08:
-  1. Test-Time Augmentation (TTA): predict from 5 time-shifted versions of
-     each test window and average → reduces prediction variance.
-  2. Minority class oversampling: classes 2 and 4 duplicated with small noise
-     to address severe class imbalance (2%→target 8%, 1%→target 6%).
-  3. Slightly more aggressive regularization.
-  4. Stronger minority class probability boost (cap raised to 5x).
-
-Output: submission_run08.csv → /kaggle/working/
 """
 
 import numpy as np
@@ -58,10 +44,7 @@ print(f"Train {X_tr_raw.shape}  Test {X_te_raw.shape}  Users {len(unique_users)}
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. PER-USER NORMALISATION (same as run07)
-# ══════════════════════════════════════════════════════════════════════════════
+# 1. PER-USER NORMALISATION
 
 def user_normalise(X, user_ids):
     X_out = X.copy()
@@ -78,11 +61,8 @@ X_tr = user_normalise(X_tr_raw, users)
 X_te = user_normalise(X_te_raw, te_users)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # 2. MINORITY CLASS OVERSAMPLING
-#    Classes 2 and 4 are tiny (3.2% and 1.3%). Duplicate their windows with
-#    tiny noise so the model sees more examples during training.
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def oversample(X, y, user_ids, targets={2: 700, 4: 500}):
     rng = np.random.default_rng(42)
@@ -106,10 +86,7 @@ def oversample(X, y, user_ids, targets={2: 700, 4: 500}):
 X_tr_os, y_tr_os, users_os = X_tr, y_tr, users
 print(f"  No oversampling (using original {X_tr_os.shape[0]} windows)")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. FEATURE EXTRACTION (same as run07)
-# ══════════════════════════════════════════════════════════════════════════════
+# 3. FEATURE EXTRACTION 
 
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
@@ -279,10 +256,7 @@ scaler  = StandardScaler()
 X_tr_sc = scaler.fit_transform(X_tr_feat)
 X_te_sc = scaler.transform(X_te_feat)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 4. LEAVE-USER-OUT CV (on original data — no oversampling in CV eval)
-# ══════════════════════════════════════════════════════════════════════════════
+# 4. LEAVE-USER-OUT CV 
 
 print("\n" + "="*60)
 print("LEAVE-USER-OUT CV (original data, no oversampling)")
@@ -322,13 +296,7 @@ for fold in range(5):
 loo_acc = accuracy_score(y_tr, loo_preds)
 print(f"\nOverall LOO-CV accuracy: {loo_acc:.4f}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. FINAL TRAINING + TEST-TIME AUGMENTATION (TTA)
-#    Predict from 5 time-shifted versions of the test windows.
-#    At 1Hz, rolling 10s shifts the signal but preserves all activity info.
-#    Averaging predictions reduces variance → more stable results.
-# ══════════════════════════════════════════════════════════════════════════════
+# 5. FINAL TRAINING + TEST-TIME AUGMENTATION
 
 print("\n" + "="*60)
 print("FINAL TRAINING + TTA")
@@ -377,10 +345,7 @@ avg_proba_boosted /= avg_proba_boosted.sum(axis=1, keepdims=True)
 preds = avg_proba_boosted.argmax(axis=1)
 print(f"\n  Class freq boost factors: {np.round(boost, 2)}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 6. SAVE
-# ══════════════════════════════════════════════════════════════════════════════
 
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)

@@ -1,20 +1,6 @@
 """
 model_run12.py — SIMPLIFIED version based on run08 learnings
-What we learned from run08 (0.7524 vs LOO-CV 0.8765):
-  - 511 features overfit badly
-  - TTA with roll() destroys temporal structure  
-  - Aggressive boosting hurts generalization
-  - Simpler is better
 
-Strategy for run12:
-  1. REDUCE features (target: 200-250, not 500+)
-  2. NO TTA (hurts more than helps)
-  3. NO oversampling (run09 proved it hurts)
-  4. Keep run07's successful per-user normalization
-  5. Add ONLY safe features (permutation entropy + energy ratio)
-  6. Feature selection to prune redundant features
-
-LOADING FROM NPZ FILES IN OUTPUT FOLDER
 """
 
 import numpy as np

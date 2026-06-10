@@ -1,14 +1,5 @@
 """
-model_run05.py — LightGBM ensemble, no CNN
-Why no CNN: CNN scored 0.8012 LOO-CV but hurt the Kaggle score when ensembled.
-LightGBM alone scored 0.8722 LOO-CV → target ~0.82 on Kaggle.
-
-Key improvements:
-  1. LightGBM only (no CNN dragging down the ensemble)
-  2. 10 LightGBM models with different seeds/params → averaged probabilities
-  3. Both raw and within-window normalised features combined
-  4. Saves directly to /kaggle/working/ automatically
-Output: submission_run05.csv
+model_run05.py — LightGBM ensemble
 """
 
 import numpy as np
@@ -31,10 +22,7 @@ else:
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. LOAD NPZ  — searches /kaggle/input recursively, then local outputs/
-# ══════════════════════════════════════════════════════════════════════════════
+# 1. LOAD NPZ 
 
 def find_npz(name: str) -> str:
     hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
@@ -61,10 +49,7 @@ print(f"Train: {X_train_raw.shape}  Test: {X_test_raw.shape}  Users: {len(unique
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_train)*100:.1f}%)")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 2. NORMALISATION
-# ══════════════════════════════════════════════════════════════════════════════
 
 def window_norm(X):
     return (X - X.mean(axis=1, keepdims=True)) / (X.std(axis=1, keepdims=True) + 1e-8)
@@ -72,10 +57,7 @@ def window_norm(X):
 X_train_norm = window_norm(X_train_raw)
 X_test_norm  = window_norm(X_test_raw)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 3. FEATURE EXTRACTION
-# ══════════════════════════════════════════════════════════════════════════════
 
 def extract(X: np.ndarray) -> np.ndarray:
     N, T, C = X.shape
@@ -167,10 +149,7 @@ X_tr_sc = scaler.fit_transform(X_tr_combined)
 X_te_sc = scaler.transform(X_te_combined)
 print(f"Feature matrix: {X_tr_sc.shape}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 4. LEAVE-USER-OUT CV
-# ══════════════════════════════════════════════════════════════════════════════
 
 print("\n" + "="*60)
 print("LEAVE-USER-OUT CV  (5 user-folds)")
@@ -208,10 +187,7 @@ for fold in range(5):
 loo_acc = accuracy_score(y_train, loo_preds)
 print(f"\nOverall LOO-CV accuracy: {loo_acc:.4f}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 5. FINAL TRAINING ON ALL DATA
-# ══════════════════════════════════════════════════════════════════════════════
 
 print("\n" + "="*60)
 print("FINAL TRAINING ON ALL DATA")
@@ -230,10 +206,7 @@ for seed, cfg in enumerate(LGB_CONFIGS * 3):   # 9 models total
 
 preds = np.mean(final_probas, axis=0).argmax(axis=1)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 6. SAVE SUBMISSION DIRECTLY TO /kaggle/working
-# ══════════════════════════════════════════════════════════════════════════════
+# 6. SAVE SUBMISSION
 
 submission = pd.DataFrame({"Id": test_ids, "Label": preds})
 submission = submission.sort_values("Id").reset_index(drop=True)

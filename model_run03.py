@@ -1,12 +1,6 @@
 """
 model_run03.py — 1D-CNN + LightGBM Ensemble with user-invariant features
-Key improvements over run02 (0.7531):
-  1. Within-window normalization: removes user-specific DC offset so the model
-     generalises to unseen test users instead of memorising training users.
-  2. 1D-CNN (PyTorch): learns temporal patterns from raw sequences directly.
-  3. Leave-user-out CV: gives a realistic accuracy estimate matching the test condition.
-  4. Ensemble: average CNN + LightGBM probabilities.
-Output: submission_run03.csv
+
 """
 
 import numpy as np
@@ -58,10 +52,7 @@ DEVICE    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 FEAT_COLS = ["mean_x", "mean_y", "mean_z", "std_x", "std_y", "std_z"]
 print(f"Device   : {DEVICE}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 1. DATA LOADING
-# ══════════════════════════════════════════════════════════════════════════════
 
 def load_dataset(root_dir: Path):
     sequences, labels, file_ids, users = [], [], [], []
@@ -88,13 +79,7 @@ unique, counts = np.unique(y_train, return_counts=True)
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_train)*100:.1f}%)")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 2. WITHIN-WINDOW NORMALISATION
-#    Key fix: each 5-minute window is z-scored using its own mean and std.
-#    This removes user-specific DC offset (phone placement / body size)
-#    so the model sees activity shape, not absolute acceleration values.
-# ══════════════════════════════════════════════════════════════════════════════
 
 def window_normalise(X: np.ndarray) -> np.ndarray:
     mu  = X.mean(axis=1, keepdims=True)          # (N, 1, 6)
@@ -105,9 +90,7 @@ X_train_norm = window_normalise(X_train_raw)     # (N, 300, 6)
 X_test_norm  = window_normalise(X_test_raw)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 # 3. 1D-CNN
-# ══════════════════════════════════════════════════════════════════════════════
 
 class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch, kernel, pool=2):
@@ -218,9 +201,7 @@ def predict_proba_cnn(model, X: np.ndarray) -> np.ndarray:
     return torch.softmax(model(Xt), dim=1).cpu().numpy()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 4. LIGHTGBM FEATURES (from within-window-normalised data)
-# ══════════════════════════════════════════════════════════════════════════════
+# 4. LIGHTGBM FEATURES
 
 def extract_features(X: np.ndarray) -> np.ndarray:
     """237-dim feature vector from within-window-normalised sequences."""
@@ -298,12 +279,7 @@ X_tr_sc   = scaler.fit_transform(X_tr_feat)
 X_te_sc   = scaler.transform(X_te_feat)
 print(f"  Feature matrix: {X_tr_sc.shape}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. LEAVE-USER-OUT CV  (realistic evaluation)
-#    Matches the actual test condition: model trained on some users,
-#    evaluated on held-out users it has never seen.
-# ══════════════════════════════════════════════════════════════════════════════
+# 5. LEAVE-USER-OUT CV
 
 print("\n" + "="*60)
 print("LEAVE-USER-OUT CV (realistic cross-user evaluation)")
@@ -347,9 +323,7 @@ if HAS_LGB:
     print(f"  LightGBM : {lgb_acc:.4f}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 6. FINAL TRAINING ON ALL DATA + ENSEMBLE PREDICTION
-# ══════════════════════════════════════════════════════════════════════════════
+# 6. FINAL TRAINING
 
 print("\n" + "="*60)
 print("FINAL TRAINING ON ALL DATA")
