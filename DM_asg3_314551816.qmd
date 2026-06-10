@@ -1520,6 +1520,16 @@ better because it is less likely to have captured training-user-specific signal 
 
 # How to Reproduce the Results
 
+## Requirements
+
+All dependencies are listed in `requirements.txt`. Install them once before running any script:
+
+```bash
+pip install -r requirements.txt
+```
+
+The key packages used by the model scripts are: `numpy`, `pandas`, `scipy`, `scikit-learn`, `lightgbm`, `xgboost`, `matplotlib`, and `seaborn`. The `requirements.txt` file is a full environment freeze and includes additional packages not needed for this project, so installing into a fresh virtual environment is recommended.
+
 ## Data Preparation
 
 The raw data consists of one CSV file per 5-minute window. Before running any model script, the CSV files need to be converted to the compressed NPZ format that all scripts expect.
