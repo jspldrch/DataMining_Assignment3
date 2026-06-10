@@ -247,8 +247,8 @@ each class. Within-class spreads of up to 0.12 are common, and the distributions
 C2 and C3 overlap substantially, which helps explain why these two classes remain the
 most difficult pair throughout all experiments.
 
-The right panel highlights this overlap: the mean_z histograms of C2 (walk downstairs)
-and C3 (walk upstairs) across users are largely indistinguishable at the global level.
+The right panel highlights this overlap: the mean_z histograms of C2 and C3
+across users are largely indistinguishable at the global level.
 A model that relies solely on the average signal value would struggle to tell them apart
 for many users.
 
@@ -328,7 +328,7 @@ for c in range(6):
     axes[0].scatter(mz, sz, alpha=0.25, s=6, color=PALETTE[c], label=f"C{c}", rasterized=True)
 
 axes[0].set_xlabel("mean_z (gravity projection)")
-axes[0].set_ylabel("std_z (motion intensity)")
+axes[0].set_ylabel("std_z")
 axes[0].set_title("Two-Feature Class Scatter: mean_z vs std_z", fontsize=10)
 leg = axes[0].legend(fontsize=8, markerscale=3, framealpha=0.8)
 for lh in leg.legend_handles:
@@ -416,8 +416,7 @@ axes[0].text(2.5, 0.698, "Phase 2\nPer-user", ha="center", fontsize=7.5, color="
 axes[0].text(4.5, 0.698, "Phase 3\nNo norm", ha="center", fontsize=7.5, color="#27ae60")
 
 # Right: gravity projection analysis — why no-norm wins
-classes_z = ["C0\n(sit/stand)", "C1\n(walk flat)", "C2\n(walk down)",
-             "C3\n(walk up)", "C4\n(running)", "C5\n(other)"]
+classes_z = ["C0", "C1", "C2", "C3", "C4", "C5"]
 mean_z_raw    = [0.971, 0.882, 0.847, 0.903, 0.814, 0.891]
 mean_z_normed = [0.000, 0.000, 0.000, 0.000, 0.000, 0.000]
 x_pos = np.arange(len(classes_z))
@@ -470,17 +469,18 @@ augmented run (run23) was:
 
 | Class | Multiplier | Rationale |
 |---|---|---|
-| C2 (walk down) | ×5 | Most confused, 3.2% of data |
-| C4 (running) | ×5 | Severely underrepresented, 1.3% |
-| C5 (other) | ×2 | Moderate minority, 4.8% |
-| C3 (walk up) | ×1 | Slight boost, 6.0% |
+| C2 | ×5 | Most confused, 3.2% of data |
+| C4 | ×5 | Severely underrepresented, 1.3% |
+| C5 | ×2 | Moderate minority, 4.8% |
+| C3 | ×1 | Slight boost, 6.0% |
 
-Noise standard deviation σ = 0.05 was applied to all channels after feature
-extraction, adding small perturbations that keep the physical meaning intact.
+Noise standard deviation σ = 0.02 was applied to all six channels of the raw
+(300 × 6) time series before feature extraction, adding small perturbations
+that preserve the physical structure of the signal.
 
 ```{python}
 #| label: fig-augmentation-paradox
-#| fig-cap: "The augmentation paradox: run25 has a higher OOF F1 (0.7076 vs 0.6948) than run23, yet achieves a lower Kaggle score (0.7633 vs 0.7792). Augmentation appears to over-smooth the OOF metric but actually prevents the model from memorising training-user signal patterns, improving generalisation to unseen test users."
+#| fig-cap: "Augmentation paradox: run25 (no augmentation) has higher OOF F1 (0.7076) than run23 (0.6948), yet a lower Kaggle score (0.7633 vs 0.7792). Augmentation prevents overfitting to training-user patterns, improving generalisation to unseen test users."
 #| fig-width: 11
 #| fig-height: 5
 
@@ -507,7 +507,7 @@ for xi, ov, kv in zip(x, oof_scores, kag_scores):
                  va="bottom", fontsize=9, fontweight="bold", color="#2980b9")
     axes[0].text(xi + w/2, kv + 0.004, f"{kv:.4f}", ha="center",
                  va="bottom", fontsize=9, fontweight="bold", color="#c0392b")
-axes[0].annotate("Higher OOF\nbut lower Kaggle",
+axes[0].annotate("",
                  xy=(1 - w/2, 0.7076), xytext=(0.35, 0.745),
                  arrowprops=dict(arrowstyle="->", color="gray"),
                  fontsize=8.5, color="gray")
@@ -710,7 +710,7 @@ both the global character and the temporal evolution of the signal.
 Since the label is constant within a window, predicting per second would provide
 no additional supervision while requiring a temporal aggregation step. The key
 challenge is therefore not label alignment but feature design: which properties
-of the 300-timestep sequence distinguish the activities?
+of the 300-timestep sequence distinguish the classes?
 
 ## Axis-Specific Features and Gravity Direction
 
@@ -725,12 +725,12 @@ acceleration per second, which contains both:
 
 Per-user normalisation removes the gravity DC component as if it were noise.
 But as shown in §2.2, mean\_z varies from 0.814 to 0.971 across classes — this
-is not user noise but activity-specific signal. More importantly, the
+is not user noise but class-specific signal. More importantly, the
 temporal drift of mean\_z within the window distinguishes C2 from C3:
 
 ```{python}
 #| label: fig-temporal-drift
-#| fig-cap: "Simulated mean_z time series for walk_flat (C1), walk_down (C2), and walk_up (C3). All three show rhythmic oscillation, but C2 has a slight negative trend (descending stairs lowers phone orientation relative to vertical) and C3 a slight positive trend. The first/last 60s comparison (right panel) captures this drift reliably."
+#| fig-cap: "Simulated mean_z time series for C1, C2, and C3. All three show rhythmic oscillation, but C2 has a slight negative trend and C3 a slight positive trend. The first/last 60s comparison (right panel) captures this drift reliably."
 #| fig-width: 12
 #| fig-height: 5
 
@@ -749,9 +749,9 @@ c3_z = make_meanZ(0.895, +0.000085, 1.4, 0.13, 0.025)
 
 fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
-for sig, lbl, col in [(c1_z,"C1: walk flat","#3498db"),
-                      (c2_z,"C2: walk down","#e74c3c"),
-                      (c3_z,"C3: walk up","#27ae60")]:
+for sig, lbl, col in [(c1_z,"C1","#3498db"),
+                      (c2_z,"C2","#e74c3c"),
+                      (c3_z,"C3","#27ae60")]:
     axes[0].plot(t, sig, lw=0.9, alpha=0.85, color=col, label=lbl)
     trend = np.polyfit(t, sig, 1)
     axes[0].plot(t, np.polyval(trend, t), "--", lw=1.8, color=col)
@@ -770,7 +770,7 @@ axes[0].text(270, 0.84, "last 60s",  ha="center", fontsize=7.5, color="gray")
 first60 = [c1_z[:60].mean(), c2_z[:60].mean(), c3_z[:60].mean()]
 last60  = [c1_z[240:].mean(), c2_z[240:].mean(), c3_z[240:].mean()]
 diff60  = [l - f for f, l in zip(first60, last60)]
-class_lbls = ["C1\nwalk flat", "C2\nwalk down", "C3\nwalk up"]
+class_lbls = ["C1", "C2", "C3"]
 xp = np.arange(3)
 w  = 0.28
 axes[1].bar(xp - w, first60, w, label="first 60s mean",
@@ -782,7 +782,7 @@ axes[1].bar(xp + w, diff60,  w, label="last − first",
 axes[1].set_xticks(xp)
 axes[1].set_xticklabels(class_lbls, fontsize=9)
 axes[1].set_ylabel("mean_z value")
-axes[1].set_title("First/Last 60s Trend Features\n(directly encode direction of travel)",
+axes[1].set_title("First/Last 60s Trend Features\n(capture within-window drift)",
                   fontsize=10)
 axes[1].legend(fontsize=8.5)
 for i, (f, l, d) in enumerate(zip(first60, last60, diff60)):
@@ -800,7 +800,7 @@ and base levels, but opposite linear trends. Without trend features, any global
 statistic (mean, std, IQR) is nearly identical for C2 and C3. The right panel
 confirms that `first_60_mean`, `last_60_mean`, and `last_minus_first_60` —
 computed for each of the six channels — capture this directional drift
-reliably and are unique to each activity.
+reliably and differ across classes.
 
 ## Temporal Feature Groups and Their Relative Importance
 
@@ -809,7 +809,7 @@ the temporal structure:
 
 ```{python}
 #| label: fig-feature-importance
-#| fig-cap: "Approximate LightGBM feature importance (% of total gain) by feature group for the 716-feature model (run27). The 10-window group dominates because 250 features encode fine-grained temporal evolution. The axis-specific mean group (78 features) carries ~9.5% gain despite being one of the smaller groups, confirming that gravity direction is a high-quality signal."
+#| fig-cap: "LightGBM feature importance (% of total gain) by feature group for the 716-feature model (run30/31). The std and cross-axis magnitude groups dominate, each contributing over 27% of total gain. The axis-specific mean group (78 features) carries 9.5% gain, confirming that gravity direction is a high-quality discriminative signal."
 #| fig-width: 11
 #| fig-height: 5
 
@@ -823,7 +823,7 @@ groups_imp = [
     "10-window\n5 channels\n(250 feat)",
 ]
 n_feat_g  = [78, 78, 52, 156, 52, 50, 250]
-imp_total = [9.5, 8.2, 8.8, 23.5, 5.8, 14.2, 30.0]
+imp_total = [9.5, 28.0, 8.8, 27.0, 6.2, 2.5, 12.0]
 imp_per_f = [i/n for i, n in zip(imp_total, n_feat_g)]
 
 fig, axes = plt.subplots(1, 2, figsize=(13, 5))
@@ -833,7 +833,7 @@ bars = axes[0].bar(range(len(groups_imp)), imp_total, color=colors_g, edgecolor=
 axes[0].set_xticks(range(len(groups_imp)))
 axes[0].set_xticklabels(groups_imp, fontsize=7.5)
 axes[0].set_ylabel("% of Total LGB Gain")
-axes[0].set_title("Feature Group Importance (Total % Gain)\nrun27 — 716 features",
+axes[0].set_title("Feature Group Importance (Total % Gain)\nrun30/31 — 716 features",
                   fontsize=10)
 for bar, v in zip(bars, imp_total):
     axes[0].text(bar.get_x() + bar.get_width()/2, v + 0.3,
@@ -843,7 +843,7 @@ bars2 = axes[1].bar(range(len(groups_imp)), imp_per_f, color=colors_g, edgecolor
 axes[1].set_xticks(range(len(groups_imp)))
 axes[1].set_xticklabels(groups_imp, fontsize=7.5)
 axes[1].set_ylabel("% Gain per Feature")
-axes[1].set_title("Feature Group Importance (Per-Feature Efficiency)\nrun27 — 716 features",
+axes[1].set_title("Feature Group Importance (Per-Feature Efficiency)\nrun30/31 — 716 features",
                   fontsize=10)
 for bar, v in zip(bars2, imp_per_f):
     axes[1].text(bar.get_x() + bar.get_width()/2, v + 0.001,
@@ -857,23 +857,25 @@ plt.show()
 | Feature group | # Features | Total gain | Gain/feature | Temporal role |
 |---|---:|---:|---:|---|
 | mean\_x/y/z stat+diff | 78 | 9.5% | 0.122% | Gravity direction + temporal drift |
-| std\_x/y/z stat+diff | 78 | 8.2% | 0.105% | Activity intensity per axis |
+| std\_x/y/z stat+diff | 78 | 28.0% | 0.359% | Motion intensity per axis |
 | acc\_mag + std\_mag | 52 | 8.8% | 0.169% | Rotation-invariant magnitude |
-| Cross-axis magnitudes | 156 | 23.5% | 0.151% | Pairwise axis interactions |
-| Sum features | 52 | 5.8% | 0.112% | Total sensor energy |
-| FFT + peaks | 50 | 14.2% | 0.284% | Most efficient — cadence frequency |
-| 10-window (5ch) | 250 | 30.0% | 0.120% | Largest total — temporal evolution |
+| Cross-axis magnitudes | 156 | 27.0% | 0.173% | Pairwise axis interactions |
+| Sum features | 52 | 6.2% | 0.119% | Total sensor energy |
+| FFT + peaks | 50 | 2.5% | 0.050% | Periodic rate of movement |
+| 10-window (5ch) | 250 | 12.0% | 0.048% | Temporal evolution |
 
-The FFT+peak group is the most efficient per feature (0.284% gain/feature),
-because dominant frequency and peak rate directly encode the activity cadence.
-Running has roughly 2 to 3 times higher step frequency than walking. The 10-window group
-has the highest total gain because 250 features comprehensively capture how
-each channel evolves across the 10 time segments.
+The std\_x/y/z group dominates with 28.0% of total gain across only 78 features
+(0.359% per feature), confirming that per-axis motion intensity is the most
+discriminative signal for class separation. Cross-axis magnitudes
+follow closely at 27.0%, capturing pairwise interactions between axes that are
+rotation-invariant. Together these two groups account for over half of all model
+gain.
 
-Importantly, the axis-specific mean group (mean\_x/y/z) has 0.122% gain
-per feature, which is higher than std channels (0.105%) and sum features (0.112%).
-This confirms that the gravity direction carries more discriminative information
-per feature than rotation-invariant summaries.
+The 10-window temporal features contribute 12.0% in total but have the lowest
+per-feature efficiency (0.048%) because the 250 features spread gain thinly
+across many segment-channel combinations. FFT and peak features contribute only
+2.5% total gain, reflecting that the periodic movement rate is already implicit in
+the std and windowed features — the tree ensemble captures it there first.
 
 ## Jerk Features
 
@@ -888,25 +890,24 @@ purposes:
    signal at this sample rate.
 
 2. Jerk asymmetry: for the jerk channels, I also computed the mean of
-   *positive* jerk values and *negative* jerk values separately. A person
-   walking downstairs has a negative vertical jerk bias (each step drops
-   the centre of mass); upstairs has a positive bias. These six features
-   (positive/negative mean per axis) were added in run22 but provided
-   only a marginal improvement (+0.005 expected, actual −0.005 on Kaggle),
-   suggesting the standard stats9 features (which include min/max/skewness)
-   already captured this asymmetry implicitly.
+   *positive* jerk values and *negative* jerk values separately. Classes with
+   a directional vertical component produce a systematic positive or negative
+   jerk bias. These six features (positive/negative mean per axis) were added
+   in run22 but provided only a marginal improvement (+0.005 expected, actual
+   −0.005 on Kaggle), suggesting the standard stats9 features (which include
+   min/max/skewness) already captured this asymmetry implicitly.
 
 ## Spectral Analysis
 
 I applied Welch's method to estimate the power spectral density of each
 channel, extracting five frequency-domain features:
 
-- Dominant frequency: the frequency with peak power, directly encodes
-  step cadence (~1.7 Hz for walking, ~2.5 Hz for running)
+- Dominant frequency: the frequency with peak power, encodes
+  the periodic rate of the movement
 - Dominant power: amplitude at peak frequency
 - Total spectral power: integral of PSD
 - Spectral entropy: $-\sum p_i \log p_i$ where $p_i$ is normalized PSD,
-  low for periodic signals (C1 to C3), high for irregular ones (C5)
+  low for periodic signals, high for irregular ones
 - Band power (low/high): energy in low-frequency (<0.5 Hz) and
   high-frequency (≥0.5 Hz) bands
 
@@ -1299,28 +1300,57 @@ LightGBM's leaf-wise growth finds the split with the highest gain globally
 features with many class-specific non-linear interactions, leaf-wise growth
 produces more informative trees within the same `num_leaves = 31` budget.
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\newpage
+
 ## Number of Temporal Segments Ablation
 
 ```{python}
 #| label: fig-segment-ablation
 #| fig-cap: "Effect of segment count on RF cross-validation accuracy. The optimum is at n=10 (30-second segments). Fewer segments lose temporal resolution; more segments produce segments too short for stable statistics (each segment contains fewer than 15 samples at n=20+)."
-#| fig-width: 7
-#| fig-height: 4
+#| fig-width: 9
+#| fig-height: 4.5
 
 n_segs  = [2, 5, 10, 15, 20, 30]
 seg_acc = [0.9071, 0.9258, 0.9377, 0.9361, 0.9349, 0.9312]
 
-fig, ax = plt.subplots(figsize=(7, 4))
+fig, ax = plt.subplots(figsize=(9, 4.5))
 ax.plot(n_segs, seg_acc, "o-", color="#2980b9", lw=2, ms=7)
 ax.axvline(10, color="#27ae60", linestyle="--", lw=1.5, label="Optimal (n=10, 30s each)")
 for x, y in zip(n_segs, seg_acc):
-    ax.text(x, y + 0.001, f"{y:.4f}", ha="center", va="bottom", fontsize=8.5)
-ax.set_xlabel("Number of Temporal Segments")
-ax.set_ylabel("5-fold CV Accuracy (RF)")
-ax.set_title("Ablation: Number of Temporal Segments (300s window)", fontsize=11)
-ax.set_ylim(0.895, 0.950)
+    ax.text(x, y + 0.0008, f"{y:.4f}", ha="center", va="bottom", fontsize=9)
+ax.set_xticks(n_segs)
+ax.set_xlabel("Number of Temporal Segments", fontsize=11)
+ax.set_ylabel("5-fold CV Accuracy (RF)", fontsize=11)
+ax.set_title("Ablation: Number of Temporal Segments (300s window)", fontsize=12)
+ax.set_xlim(0, 33)
+ax.set_ylim(0.895, 0.952)
 ax.legend(fontsize=10)
-plt.tight_layout()
+plt.tight_layout(pad=1.5)
 plt.savefig("outputs/q4_segments.png", dpi=150, bbox_inches="tight")
 plt.show()
 ```
