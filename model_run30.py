@@ -1,41 +1,4 @@
-"""
-model_run30.py — run27 features (716) + RandomForest in ensemble
-
-Run history:
-  run27: 716 features, 5 LGB + 2 XGB = 7 models → Kaggle 0.7895  ← best so far
-  run28: 750 features, stronger reg              → Kaggle 0.7785  (reg too strong)
-  run29: 750 features, run27 reg restored        → Kaggle 0.7853  (new feats redundant)
-
-Root cause of run28/29 regression:
-  The 34 new features (tilt, axis_covcorr, mean_xyz_fft, step_rhythm) total only 2.9%
-  LGB gain because they are geometrically redundant with the existing cross_magnitudes
-  group (xy_mag, xz_mag, yz_mag already encode the same axis interactions). The model
-  saturates validation signal earlier → early stopping fires at ~160 iters instead of
-  the run27 optimum. Stripping them back recovers run27 performance.
-
-  Evidence: C2 soft-confusion C2→C1 was 0.467 in run28, 0.474 in run29 (got WORSE).
-  The new features did not improve C2; the run27 axis-specific mean features (indices
-  0-77, 8.7-9% gain) already captured the gravity-direction signal.
-
-Change vs run27:
-  + RandomForestClassifier(300 trees, balanced_subsample) added to final ensemble
-    RF has fundamentally different split criteria → low error correlation with LGB/XGB
-    → lower ensemble variance without adding new information to the OOF calibration.
-
-  Everything else is exactly run27: 716 features, GroupKFold(5), early stopping,
-  min_child_samples=20, reg_lambda=1.0.
-
-Feature layout (716, identical to run27):
-  0– 77: mean_xyz axis stat+diff   (78)  — axis-specific raw means, gravity direction
-  78–155: std_xyz  axis stat+diff   (78)
- 156–207: acc_mag+std_mag stat+diff (52)
- 208–363: cross-magnitudes stat+diff(156) — xy/xz/yz_mag + std variants
- 364–415: sum_features stat+diff    (52)
- 416–465: FFT+peak 5 channels       (50)
- 466–715: 10-window 5 channels      (250)
-
-Paths: auto-detects Kaggle vs laptop (same as run26–29).
-"""
+# run30: 716 features, 5 LGB + 2 XGB + 1 RF, lr=0.03, patience=100, no augmentation
 
 import numpy as np
 import pandas as pd
@@ -68,9 +31,8 @@ print(f"Output dir: {OUT_DIR}")
 CLASS_NAMES = ["sit/stand", "walk_flat", "walk_down", "walk_up", "running", "other"]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING
-# ──────────────────────────────────────────────────────────────────────────────
+
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -86,9 +48,7 @@ def find_npz(name):
     if local.exists(): return str(local)
     raise FileNotFoundError(f"Cannot find {name}")
 
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
+print("loading data...")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -110,9 +70,8 @@ for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS — identical to run27
-# ──────────────────────────────────────────────────────────────────────────────
+
+# feature helpers
 def _safe_skew_vec(ch):
     return np.array([skew(r) if np.std(r) >= 1e-12 else 0.0 for r in ch], dtype=np.float32)
 
@@ -120,7 +79,7 @@ def _safe_kurtosis_vec(ch):
     return np.array([kurtosis(r) if np.std(r) >= 1e-12 else 0.0 for r in ch], dtype=np.float32)
 
 def stat_features(ch, prefix):
-    """18 statistics per channel. ch: (N,T) → (N,18)"""
+    # 18 stats per channel
     q = np.percentile(ch, [5, 10, 25, 75, 90, 95], axis=1).T
     m = ch.mean(axis=1); e = (ch**2).mean(axis=1)
     f = np.column_stack([
@@ -139,7 +98,7 @@ def stat_features(ch, prefix):
     return f.astype(np.float32), names
 
 def diff_features(ch, prefix):
-    """8 temporal diff+trend features. ch: (N,T) → (N,8)"""
+    # 8 diff+trend features
     d = np.diff(ch, axis=1); a = np.abs(d)
     f = np.column_stack([
         d.mean(1), d.std(1), a.mean(1), a.max(1), (d**2).mean(1),
@@ -153,7 +112,7 @@ def diff_features(ch, prefix):
     return f.astype(np.float32), names
 
 def fft_features(ch, prefix):
-    """6 FFT features (rfft, no DC, low/high at 0.10 Hz). ch: (N,T) → (N,6)"""
+    # 6 FFT features
     N, T  = ch.shape
     freqs = np.fft.rfftfreq(T, d=1.0)
     out   = np.zeros((N, 6), dtype=np.float32)
@@ -173,7 +132,7 @@ def fft_features(ch, prefix):
     return out, names
 
 def peak_features(ch, prefix):
-    """4 peak features (threshold = mean + 0.5·std). ch: (N,T) → (N,4)"""
+    # 4 peak features
     N, T = ch.shape; out = np.zeros((N, 4), dtype=np.float32)
     for n in range(N):
         v = ch[n]
@@ -188,7 +147,7 @@ def peak_features(ch, prefix):
     return out, names
 
 def window_features(ch, prefix, n_windows=10):
-    """10 windows × 5 stats = 50 features. ch: (N,T) → (N,50)"""
+    # 10 windows x 5 stats = 50 features
     N, T = ch.shape; ws = T // n_windows
     parts, names = [], []
     for w in range(n_windows):
@@ -200,9 +159,8 @@ def window_features(ch, prefix, n_windows=10):
     return np.concatenate(parts, axis=1).astype(np.float32), names
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION — 716 features, identical to run27
-# ──────────────────────────────────────────────────────────────────────────────
+
+# feature extraction (716 features)
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -255,7 +213,7 @@ print("\nExtracting features...")
 X_tr_feat, feat_names = extract(X_tr)
 X_te_feat, _          = extract(X_te)
 assert X_tr_feat.shape[1] == 716, f"Expected 716, got {X_tr_feat.shape[1]}"
-print(f"  Features: {X_tr_feat.shape[1]}  (run27 exact — 34 redundant features from run28/29 removed)")
+print(f"  Features: {X_tr_feat.shape[1]}")
 
 def clean(F_tr, F_te):
     F_tr = np.where(np.isfinite(F_tr), F_tr, np.nan)
@@ -268,12 +226,9 @@ def clean(F_tr, F_te):
 X_tr_feat, X_te_feat = clean(X_tr_feat, X_te_feat)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GROUPKFOLD CV — identical to run27 (notebook-exact LGB setup)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("GROUPKFOLD CV (5 splits, run27-exact LGB, early stopping=100)")
-print("=" * 60)
+
+# groupkfold cv
+print("\ngroupkfold cv...")
 
 gkf        = GroupKFold(n_splits=5)
 loo_probas = np.zeros((len(y_tr), 6), dtype=np.float64)
@@ -316,28 +271,26 @@ for fold, (tr_idx, va_idx) in enumerate(gkf.split(X_tr_feat, y_tr, groups=users)
           f"Macro F1={fold_f1:.4f}  Acc={accuracy_score(y_f_va, va_proba.argmax(1)):.4f}")
 
 avg_best_iter = int(np.mean(best_iters) * 1.10)
-print(f"\nBest iters per fold: {best_iters}  →  final n_estimators = {avg_best_iter}")
-print(f"  run28/29 had [~125-210] avg~160 — watch for higher values here (fewer redundant features)")
+print(f"\nBest iters per fold: {best_iters}  ->  final n_estimators = {avg_best_iter}")
 
 loo_preds    = loo_probas.argmax(1)
 baseline_f1  = f1_score(y_tr, loo_preds, average='macro')
 per_class_f1 = f1_score(y_tr, loo_preds, average=None)
-print(f"\nOOF macro F1 : {baseline_f1:.4f}  (run27 target: ~0.730, run29: 0.7266)")
+print(f"\nOOF macro F1 : {baseline_f1:.4f}")
 print(f"Mean fold F1 : {np.mean(fold_f1s):.4f} ± {np.std(fold_f1s):.4f}")
 print("Per-class F1 :", [f"{f:.3f}" for f in per_class_f1])
-print(f"  C2 walk_down: {per_class_f1[2]:.3f}  (run29: 0.237, run27: expected ~0.20+)")
+print(f"  C2 walk_down: {per_class_f1[2]:.3f}")
 print("\n" + classification_report(y_tr, loo_preds, target_names=CLASS_NAMES, digits=4))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CONFUSION MATRIX
-# ──────────────────────────────────────────────────────────────────────────────
+
+# confusion matrix
 cm = confusion_matrix(y_tr, loo_preds, normalize='true')
 print("CV Confusion Matrix (row=true, col=predicted):")
 print(f"  {'':16}" + "".join(f"    C{c}" for c in range(6)))
 for i in range(6):
     row  = "".join(f"  {cm[i,j]:.2f}" for j in range(6))
-    flag = "  ← C2 bottleneck (run29: 0.20)" if i == 2 else ""
+    flag = "  <- C2 bottleneck" if i == 2 else ""
     print(f"  C{i} {CLASS_NAMES[i]:<14}{row}{flag}")
 
 fig, ax = plt.subplots(figsize=(8, 6))
@@ -352,12 +305,9 @@ plt.close()
 print("  Saved: run30_confusion_matrix.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# COVARIANCE & CORRELATION MATRICES
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("OOF PROBABILITY COVARIANCE & CORRELATION MATRICES")
-print("=" * 60)
+
+# oof probability covariance and correlation matrices
+print("\nOOF probability matrices...")
 
 cov_mat  = np.cov(loo_probas.T)
 std_diag = np.sqrt(np.diag(cov_mat))
@@ -396,8 +346,8 @@ print("\nSoft confusion (mean predicted probability per true class):")
 print(f"  {'':14}" + "".join(f"  {n:>10}" for n in CLASS_NAMES))
 for i in range(6):
     print(f"  {CLASS_NAMES[i]:<14}" + "".join(f"  {soft_cm[i,j]:>10.4f}" for j in range(6)))
-print(f"\n  C2→C1 confusion: {soft_cm[2,1]:.4f}  (run29: 0.474, run28: 0.467)")
-print(f"  C2 self-proba:   {soft_cm[2,2]:.4f}  (run29: 0.214, run28: 0.221)")
+print(f"\n  C2->C1 confusion: {soft_cm[2,1]:.4f}")
+print(f"  C2 self-proba:    {soft_cm[2,2]:.4f}")
 
 fig, ax = plt.subplots(figsize=(8, 6))
 sns.heatmap(soft_cm, annot=True, fmt='.3f', cmap='Blues', ax=ax,
@@ -411,12 +361,9 @@ plt.close()
 print("  Saved: run30_soft_confusion.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("THRESHOLD OPTIMIZATION")
-print("=" * 60)
+
+# threshold optimization
+print("\nthreshold optimization...")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -464,13 +411,9 @@ plt.close()
 print("  Saved: run30_per_class_f1.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — 5 LGB + 2 XGB + 1 RF = 8 models
-# RF is the only addition vs run27; it uses split criteria uncorrelated with boosting
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print(f"FINAL TRAINING (5 LGB @ {avg_best_iter} iters + 2 XGB + 1 RF = 8 models)")
-print("=" * 60)
+
+# final training (5 LGB + 2 XGB + 1 RF)
+print(f"\nfinal training (8 models, n_estimators={avg_best_iter})...")
 
 sw_all       = compute_sample_weight('balanced', y_tr)
 final_probas = []
@@ -488,7 +431,7 @@ for seed in range(5):
     m.fit(X_tr_feat, y_tr, sample_weight=sw_all)
     final_probas.append(m.predict_proba(X_te_feat))
     lgb_models.append(m)
-print(f"  LightGBM: {len(lgb_models)} models  (n_estimators={avg_best_iter})")
+print(f"  LightGBM: {len(lgb_models)} models")
 
 xgb_start = len(final_probas)
 for seed in range(2):
@@ -508,7 +451,7 @@ rf = RandomForestClassifier(
 )
 rf.fit(X_tr_feat, y_tr)
 final_probas.append(rf.predict_proba(X_te_feat))
-print(f"  RandomForest: 1 model  (300 trees, balanced_subsample)")
+print(f"  RandomForest: 1 model")
 print(f"  Total: {len(final_probas)} models")
 
 avg_proba   = np.mean(final_probas, axis=0)
@@ -517,9 +460,8 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE (LGB + RF side by side)
-# ──────────────────────────────────────────────────────────────────────────────
+
+# feature group importance (LGB + RF)
 FEATURE_GROUPS = [
     (  0,  78, "mean_xyz_axis_stat+diff"),
     ( 78, 156, "std_xyz_axis_stat+diff"),
@@ -530,9 +472,7 @@ FEATURE_GROUPS = [
     (466, 716, "window_10win_5ch"),
 ]
 
-print("\n" + "=" * 60)
-print("FEATURE GROUP IMPORTANCE (LightGBM gain, avg over 5 models)")
-print("=" * 60)
+print("\nfeature group importance...")
 imp_matrix = np.zeros((len(lgb_models), X_tr_feat.shape[1]))
 for i, m in enumerate(lgb_models):
     imp_matrix[i] = m.booster_.feature_importance(importance_type='gain')
@@ -583,29 +523,19 @@ for rank, idx in enumerate(top20, 1):
     print(f"  {rank:2d}. {feat_names[idx]:<50}  gain={avg_imp[idx]:.1f}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run30.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train rate):")
+print(f"submission saved to {out_path}")
+print("\nPrediction distribution:")
 for c in range(6):
     cnt = (preds == c).sum()
     exp = int(len(preds) * counts[c] / len(y_tr))
     print(f"  Class {c} {CLASS_NAMES[c]:<12}: {cnt:5d}  (expected ~{exp}, delta {cnt-exp:+d})")
 
-print(f"\nOptimal scales:          {np.round(optimal_scales, 3)}")
-print(f"OOF F1 (baseline):       {baseline_f1:.4f}")
-print(f"OOF F1 (threshold-opt):  {opt_f1:.4f}")
-print(f"\nRun comparison:")
-print(f"  run27: ~0.730 OOF  0.7895 Kaggle  (716 feat, 5 LGB + 2 XGB)")
-print(f"  run28:  0.725 OOF  0.7785 Kaggle  (750 feat, reg too strong)")
-print(f"  run29:  0.727 OOF  0.7853 Kaggle  (750 feat, reg restored)")
-print(f"  run30:  {baseline_f1:.4f} OOF  ?.???? Kaggle  (716 feat, 5 LGB + 2 XGB + 1 RF)")
-print(f"\n  C2 walk_down diagonal:  run28/29=0.20  run30={cm[2,2]:.2f}")
-print(f"  C2→C1 confusion:        run29=0.474    run30={soft_cm[2,1]:.3f}")
-print(f"  Best iters:             run28/29~160   run30={best_iters} (expect higher w/ 716 feats)")
+print(f"\nOOF F1 (baseline): {baseline_f1:.4f}  OOF F1 (opt): {opt_f1:.4f}")
+print(f"best_iters: {best_iters}  C2 diagonal: {cm[2,2]:.2f}  C2->C1: {soft_cm[2,1]:.3f}")

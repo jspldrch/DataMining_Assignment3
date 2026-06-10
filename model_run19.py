@@ -1,33 +1,4 @@
-"""
-model_run19.py — Feature ablation study + improved submission
-
-Purpose:
-1. Ablation study: test removing mag_mean features (friend's suggestion).
-   mag_mean = sqrt(mean_x²+mean_y²+mean_z²) retains the gravity component.
-   After per-user normalization the DC offset is removed, but the orientation-
-   dependent variation remains — this may hurt cross-user generalization.
-2. Feature group importance: which of the 14 groups contributes most to
-   macro F1? Used to answer the ablation question in the report.
-3. Submission using the better feature set found by ablation.
-
-Feature groups in the 373-dim base vector (indices into unscaled features):
-  [  0: 27]  std_channels  stats9(sx, sy, sz)
-  [ 27: 36]  mag_std       stats9(sqrt(sx²+sy²+sz²))
-  [ 36: 45]  mag_mean      stats9(sqrt(mx²+my²+mz²))  ← test removing
-  [ 45: 72]  jerk_channels stats9(jx, jy, jz)
-  [ 72: 81]  mag_jerk      stats9(sqrt(jx²+jy²+jz²))
-  [ 81:201]  seg_mag       segments(mag_std, mag_jerk, 10 & 20 segs)
-  [201:261]  seg_std_ch    segments(sx, sy, sz, 10 segs)
-  [261:321]  seg_jerk_ch   segments(jx, jy, jz, 10 segs)
-  [321:328]  ac_jerk       autocorr(mag_jerk, 7 lags)
-  [328:340]  ac_std_ch     autocorr(sx, sy, sz, 4 lags each)
-  [340:365]  spectral      spectral5(mag_jerk, mag_std, sx, sy, sz)
-  [365:371]  crosscorr     xcorr(jerk pairs) + xcorr(std pairs)
-  [371:372]  zerocross     zero-crossing rate of mag_jerk
-  [372:373]  peaks         peak rate of mag_jerk
-
-Baseline: run18 = 0.7738 (augmentation + user context + LGB+XGB ensemble)
-"""
+# run19: ablation study on mag_mean (373 features), 15 LGB + 9 XGB, augmentation, per-user norm
 
 import numpy as np
 import pandas as pd
@@ -51,11 +22,11 @@ OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
-# ─── Feature group definitions (start, end, name) ────────────────────────────
+# feature groups (start, end, name)
 FEATURE_GROUPS = [
     (  0,  27, "std_channels"),
     ( 27,  36, "mag_std"),
-    ( 36,  45, "mag_mean"),        # ← friend says this hurts
+    ( 36,  45, "mag_mean"),        # test removing this
     ( 45,  72, "jerk_channels"),
     ( 72,  81, "mag_jerk"),
     ( 81, 201, "seg_mag"),
@@ -69,9 +40,7 @@ FEATURE_GROUPS = [
     (372, 373, "peaks"),
 ]
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING
-# ──────────────────────────────────────────────────────────────────────────────
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -86,10 +55,6 @@ def find_npz(name):
     if hits:
         return hits[0]
     raise FileNotFoundError(f"Cannot find {name} in /kaggle/input/")
-
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -112,9 +77,7 @@ for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PER-USER NORMALIZATION
-# ──────────────────────────────────────────────────────────────────────────────
+# per-user normalization
 def user_normalise(X, user_ids):
     X_out = X.copy()
     for uid in np.unique(user_ids):
@@ -130,9 +93,7 @@ X_tr = user_normalise(X_tr_raw, users)
 X_te = user_normalise(X_te_raw, te_users)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA AUGMENTATION (same as run18)
-# ──────────────────────────────────────────────────────────────────────────────
+# data augmentation (same as run18)
 AUG_CONFIG    = {2: 5, 4: 5, 5: 2, 3: 1}
 AUG_NOISE_STD = 0.03
 
@@ -156,12 +117,10 @@ print("\nAugmenting minority classes...")
 X_tr_aug, y_tr_aug, users_aug = augment_minority(
     X_tr, y_tr, users, AUG_CONFIG, AUG_NOISE_STD, SEED
 )
-print(f"  {len(y_tr)} → {len(y_tr_aug)} samples")
+print(f"  {len(y_tr)} -> {len(y_tr_aug)} samples")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# feature helpers
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s, 1),
@@ -201,9 +160,7 @@ def xcorr(a, b):
     return (ca*cb).mean(1) / (ca.std(1)*cb.std(1)+1e-10)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION — 373 features, same order as run07/run18
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction — 373 features (same as run07/run18)
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -221,7 +178,7 @@ def extract(X):
 
     for ch in [sx, sy, sz]:          parts += stats9(ch)   # [0:27]
     parts += stats9(mag_std)                                # [27:36]
-    parts += stats9(mag_mean)                               # [36:45]  ← mag_mean
+    parts += stats9(mag_mean)                               # [36:45] mag_mean
     for ch in [jx, jy, jz]:          parts += stats9(ch)   # [45:72]
     parts += stats9(mag_jerk)                               # [72:81]
 
@@ -257,9 +214,7 @@ def extract(X):
     ]).astype(np.float32)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# USER-CONTEXTUAL FEATURES (same as run18)
-# ──────────────────────────────────────────────────────────────────────────────
+# user-contextual features (same as run18)
 N_CTX = 45
 
 def add_user_context(X_feat, user_ids, ref_feat=None, ref_user_ids=None):
@@ -278,19 +233,14 @@ def add_user_context(X_feat, user_ids, ref_feat=None, ref_user_ids=None):
 
 
 print("\nExtracting features...")
-X_tr_orig_feat = extract(X_tr)       # (11020, 373)
-X_tr_aug_feat  = extract(X_tr_aug)   # (15228, 373)
-X_te_feat      = extract(X_te)       # (6849,  373)
+X_tr_orig_feat = extract(X_tr)
+X_tr_aug_feat  = extract(X_tr_aug)
+X_te_feat      = extract(X_te)
 print(f"  Features: {X_tr_orig_feat.shape[1]} base")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ABLATION: test removing mag_mean (features 36:45)
-# Run a quick 2-fold CV comparing full vs no-mag-mean feature sets.
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("ABLATION: mag_mean removal (2-fold quick check)")
-print("="*60)
+# ablation: test removing mag_mean (features 36:45), quick 2-fold CV
+print("\nablation: mag_mean removal (2-fold check)")
 
 unique_users = np.unique(users)
 user_folds   = {u: i % 5 for i, u in enumerate(unique_users)}
@@ -353,17 +303,15 @@ for variant_name, feat_idx in [("full_373", ALL_IDX), ("no_mag_mean_364", NO_MAG
           f"  (folds: {[f'{f:.4f}' for f in fold_f1s]})")
 
 remove_mag_mean = ablation_results["no_mag_mean_364"] > ablation_results["full_373"]
-print(f"\n→ Removing mag_mean {'HELPS' if remove_mag_mean else 'HURTS'}"
-      f"  (Δ = {ablation_results['no_mag_mean_364'] - ablation_results['full_373']:+.4f})")
+print(f"\nremoving mag_mean {'HELPS' if remove_mag_mean else 'HURTS'}"
+      f"  (delta = {ablation_results['no_mag_mean_364'] - ablation_results['full_373']:+.4f})")
 
 FEAT_IDX = NO_MAG_IDX if remove_mag_mean else ALL_IDX
 N_BASE   = len(FEAT_IDX)
-print(f"→ Using {N_BASE} base features for full model")
+print(f"using {N_BASE} base features for full model")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# BUILD FINAL FEATURE MATRICES with chosen feature set
-# ──────────────────────────────────────────────────────────────────────────────
+# build final feature matrices with chosen feature set
 X_tr_aug_sel  = X_tr_aug_feat[:, FEAT_IDX]
 X_tr_orig_sel = X_tr_orig_feat[:, FEAT_IDX]
 X_te_sel      = X_te_feat[:, FEAT_IDX]
@@ -380,12 +328,8 @@ X_tr_sc = scaler.fit_transform(X_tr_aug_ctx)
 X_te_sc = scaler.transform(X_te_ctx)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FULL LOO-CV (5 folds) WITH PROBABILITY COLLECTION
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("LOO-CV — threshold optimization")
-print("="*60)
+# 5-fold LOO-CV with probability collection
+print("\nLOO-CV — threshold optimization")
 
 CONFIGS = [
     dict(num_leaves=31,  learning_rate=0.05, colsample_bytree=0.7, subsample=0.7),
@@ -439,12 +383,8 @@ print(f"\nBaseline CV macro F1: {baseline_f1:.4f}")
 print("Per-class F1:", [f"{f:.3f}" for f in per_class_f1])
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("THRESHOLD OPTIMIZATION")
-print("="*60)
+# threshold optimization
+print("\nthreshold optimization")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -475,12 +415,8 @@ print(f"CV F1 after opt: {opt_f1:.4f}  (was {baseline_f1:.4f}, +{opt_f1-baseline
 print("Per-class F1:", [f"{f:.3f}" for f in opt_per_class])
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — LightGBM (15) + XGBoost (9) = 24 models
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FINAL TRAINING (24 models)")
-print("="*60)
+# final training — 15 LGB + 9 XGB
+print("\nfinal training (24 models)")
 
 sw_aug = compute_sample_weight('balanced', y_tr_aug)
 
@@ -494,7 +430,7 @@ XGB_CONFIGS = [
 ]
 
 final_probas  = []
-lgb_importances = []   # collect for feature importance report
+lgb_importances = []
 
 for seed in range(5):
     for cfg in CONFIGS:
@@ -526,33 +462,23 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE REPORT
-# Average LightGBM gain importance across all LGB models, grouped by feature group.
-# The user-context features (last N_CTX columns) are reported separately.
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FEATURE GROUP IMPORTANCE (LightGBM gain, averaged over 15 models)")
-print("="*60)
+# feature group importance (LGB gain, averaged over 15 models)
+print("\nfeature group importance")
 
-avg_imp = np.mean(lgb_importances, axis=0)   # (N_base + N_CTX,)
+avg_imp = np.mean(lgb_importances, axis=0)
 total_imp = avg_imp.sum()
 
-# Base feature groups (only selected features — re-index if mag_mean removed)
 selected_groups = []
 for start, end, name in FEATURE_GROUPS:
-    # Find which original indices are in FEAT_IDX and in [start:end]
     group_mask = (FEAT_IDX >= start) & (FEAT_IDX < end)
     n_in_group = group_mask.sum()
     if n_in_group == 0:
         selected_groups.append((name, 0, 0))
         continue
-    # Positions of these features in the selected feature vector
     selected_pos = np.where(group_mask)[0]
     group_imp = avg_imp[selected_pos].sum()
     selected_groups.append((name, n_in_group, group_imp))
 
-# User-context features (appended at the end)
 ctx_imp = avg_imp[N_BASE:].sum()
 selected_groups.append(("user_context", N_CTX, ctx_imp))
 
@@ -563,14 +489,12 @@ for name, n, imp in sorted(selected_groups, key=lambda x: -x[2]):
     removed = " (REMOVED)" if n == 0 else ""
     print(f"  {name:<18} {n:>8}   {imp:>12.1f}   {pct:>10.1f}%{removed}")
 
-# Save importance table to CSV for the report
 imp_df = pd.DataFrame(selected_groups, columns=["group", "n_features", "importance"])
 imp_df["pct_total"] = 100 * imp_df["importance"] / total_imp
 imp_df = imp_df.sort_values("importance", ascending=False)
 imp_df.to_csv(OUT_DIR / "feature_group_importance_run19.csv", index=False)
-print(f"\nImportance table saved: {OUT_DIR / 'feature_group_importance_run19.csv'}")
+print(f"importance table saved: {OUT_DIR / 'feature_group_importance_run19.csv'}")
 
-# Also save per-feature importance for detailed analysis
 n_base_feats = X_tr_aug_ctx.shape[1]
 feat_names = []
 for i, fi in enumerate(FEAT_IDX):
@@ -586,23 +510,13 @@ per_feat_df = per_feat_df.sort_values("importance", ascending=False)
 per_feat_df.to_csv(OUT_DIR / "per_feature_importance_run19.csv", index=False)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run19.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print(f"\nAblation summary:")
-for k, v in ablation_results.items():
-    print(f"  {k}: {v:.4f}")
-print(f"  → Used: {'no_mag_mean_364' if remove_mag_mean else 'full_373'}")
-print(f"\nPrediction distribution:")
-for c in range(6):
-    cnt = (preds == c).sum()
-    exp = int(len(preds) * counts[c] / len(y_tr))
-    print(f"  Class {c}: {cnt:5d}  (expected ~{exp})")
-print(f"\nCV F1 (optimized): {opt_f1:.4f}")
-print(f"Baseline run18:    0.7738")
+print(f"submission saved to {out_path}")
+print(f"ablation: full_373={ablation_results['full_373']:.4f}  no_mag_mean_364={ablation_results['no_mag_mean_364']:.4f}  -> used {'no_mag_mean_364' if remove_mag_mean else 'full_373'}")
+print(f"CV F1: {baseline_f1:.4f}  -> after threshold opt: {opt_f1:.4f}")
+print(f"optimal scales: {np.round(optimal_scales, 3)}")

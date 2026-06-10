@@ -28,9 +28,9 @@ LABELS  = [f"C{i}" for i in range(6)]
 
 GitHub: <https://github.com/jspldrch/DataMining_Assignment3.git>
 
-# 1. Preliminary Analysis & Naive Baselines
+# Preliminary Analysis and Naive Baselines
 
-## 1.1 Class Distribution
+## Class Distribution
 
 ```{python}
 #| label: fig-class-dist
@@ -74,7 +74,7 @@ This imbalance has three direct consequences for modelling:
 3. Class weighting is necessary: I used `class_weight='balanced'` or equivalent
    `sample_weight` in some models to compensate for the imbalance.
 
-## 1.2 Signal Characteristics per Class
+## Signal Characteristics per Class
 
 ```{python}
 #| label: fig-heatmap
@@ -105,15 +105,15 @@ plt.show()
 
 Key observations from the heatmap:
 
-- mean_z encodes the gravity projection: C0 shows mean_z ≈ 0.97 — nearly all
-  gravity along the z-axis — while C4 shows 0.81, indicating a different phone
+- mean_z encodes the gravity projection. C0 shows mean_z around 0.97, which means nearly all
+  gravity points along the z-axis, while C4 shows 0.81, indicating a different phone
   orientation during that activity.
-- std channels reflect motion intensity: C4 has std values approximately 3×
-  those of C0 and roughly 2.5× those of C2/C3.
-- C2 and C3 are the hardest pair to separate globally: they have nearly
-  identical std values but differ by 0.056 in mean_z. This indicates that distinguishing them requires additional features. 
+- std channels reflect motion intensity. C4 has std values approximately 3 times
+  higher than C0 and roughly 2.5 times higher than C2 and C3.
+- C2 and C3 are the hardest pair to separate globally. They have nearly
+  identical std values but differ by 0.056 in mean_z. This means distinguishing them requires additional features.
 
-## 1.3 Representative Time Series
+## Representative Time Series
 
 ```{python}
 #| label: fig-timeseries
@@ -178,7 +178,7 @@ clear dominant frequency. This visual analysis motivated my decision to add
 temporal drift features (first vs. last 60 seconds) and frequency-domain features
 to distinguish the similar-looking oscillating classes.
 
-## 1.4 Naive Baseline Models
+## Naive Baseline Models
 
 I evaluated four naive classifiers using 5-fold stratified cross-validation on the
 raw global statistics (12 features: global mean and std of each channel):
@@ -231,16 +231,16 @@ plt.show()
 - Even on 12 raw features, Logistic Regression achieves 81%, confirming that most of the 
   classes differ substantially in their global signal distributions.
 - The per-user majority baseline (75.2%) illustrates a ceiling for user-specific
-  reasoning; since test users are entirely unseen, any model that relies on
+  reasoning. Since test users are entirely unseen, any model that relies on
   per-user patterns will fail to generalise.
-- These baselines use *accuracy* for comparability; the competition metric is
+- These baselines use *accuracy* for comparability. The competition metric is
   *macro-F1*, which would score the majority-class baseline at **0.000** for
   all minority classes.
 
 
-# 2. Preprocessing Techniques
+# Preprocessing and Feature Engineering
 
-## 2.1 Data Preparation
+## Data Preparation
 
 The raw data consists of one CSV file per 5-minute window, each containing 300 rows
 of per-second accelerometer statistics. As a first step I converted all CSV files
@@ -254,7 +254,7 @@ were filled with per-column zeros (safe because the channels represent statistic
 of a zero-mean motion signal). No scaling was applied — LightGBM and XGBoost are
 split-point-based and scale-invariant.
 
-## 2.2 Normalisation Strategy: Three Phases
+## Normalisation Strategy
 
 Choosing the right normalisation was the single most impactful preprocessing
 decision. I tested three strategies across 31 model runs.
@@ -324,27 +324,27 @@ plt.savefig("outputs/q2_normalisation.png", dpi=150, bbox_inches="tight")
 plt.show()
 ```
 
-**Phase 1 — Window-level normalisation (run03–05):** I subtracted each window's
+**Phase 1: Window-level normalisation (run03 to run05).** I subtracted each window's
 own mean before extracting features. This removed the gravity projection
-*within each window*, eliminating the most class-discriminative signal.
+within each window, which eliminated the most class-discriminative signal.
 Best score: **0.7337**.
 
-**Phase 2 — Per-user normalisation (run07–22):** I computed per-user global
+**Phase 2: Per-user normalisation (run07 to run22).** I computed per-user global
 mean and std across all of each user's windows and normalised by those. This
 removed the user-specific DC offset while better preserving within-user
 activity differences. Score improved to **0.7738** with additional features.
-However, per-user normalisation still removed the gravity projection:
-after normalisation, mean\_z is centred at 0 for every user and class, destroying
+However, per-user normalisation still removed the gravity projection.
+After normalisation, mean\_z is centred at 0 for every user and class, which destroys
 the 0.056 gap between C2 (0.847) and C3 (0.903) visible in the right panel.
 
-**Phase 3 — No normalisation (run23–31):** Removing normalisation entirely
+**Phase 3: No normalisation (run23 to run31).** Removing normalisation entirely
 preserved the raw gravity direction. LightGBM and XGBoost do not require
-normalised inputs — they find optimal split thresholds regardless of scale.
+normalised inputs because they find optimal split thresholds regardless of scale.
 Best score: **0.7906**. The right panel above shows that mean\_z has clear
-class-specific values in the raw signal; per-user normalisation collapses all
+class-specific values in the raw signal, while per-user normalisation collapses all
 of them to zero.
 
-## 2.3 Data Augmentation
+## Data Augmentation
 
 I used **Gaussian noise injection** on minority-class training windows to
 address class imbalance. The augmentation configuration for my best
@@ -405,7 +405,7 @@ axes[1].set_xticks(x2)
 axes[1].set_xticklabels(class_names, fontsize=10)
 axes[1].set_ylim(0, 1.0)
 axes[1].set_ylabel("Per-class F1")
-axes[1].set_title("Per-class F1: Augmentation Effect\n(OOF estimates)", fontsize=11)
+axes[1].set_title("Per-class F1: Augmentation Effect\n(cross-validation estimates)", fontsize=11)
 axes[1].legend(fontsize=9)
 axes[1].axhline(np.mean(f1_aug),   color="#27ae60", lw=1.2, linestyle="--", alpha=0.7,
                label=f"Macro F1 aug = {np.mean(f1_aug):.3f}")
@@ -430,7 +430,7 @@ on C4 (+4.1pp) and C2 (+6.7pp) — exactly the classes with fewest training
 examples. This confirms augmentation's role as an anti-overfitting mechanism
 for rare classes.
 
-## 2.4 Feature Selection: A Cautionary Experiment
+## Feature Selection
 
 Motivated by the risk of overfitting with hundreds of features, I explored
 aggressive feature selection in three experiments:
@@ -492,7 +492,7 @@ precisely than crude feature pruning. Correlated and redundant features actually
 features, increasing ensemble diversity. Removing them eliminates this diversity
 and reduces ensemble variance reduction.
 
-## 2.5 Incremental Feature Engineering Pipeline
+## Incremental Feature Engineering
 
 I built the feature set iteratively, validating each new group before adding it.
 
@@ -510,7 +510,7 @@ descriptions = ["Global mean+std", "+ Outlier clipping", "+ Extended statistics"
                 "+ Vector magnitude", "+ Temporal segments", "+ Frequency domain"]
 blue_grad    = [plt.cm.Blues(v) for v in np.linspace(0.35, 0.9, len(steps))]
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+fig, axes = plt.subplots(2, 1, figsize=(11, 10))
 bars = axes[0].bar(np.arange(len(steps)), means, yerr=stds, capsize=4,
                    color=blue_grad, edgecolor="white", linewidth=0.8)
 for i, (bar, m, s) in enumerate(zip(bars, means, stds)):
@@ -528,18 +528,23 @@ axes[0].set_ylabel("5-fold CV Accuracy (Random Forest)")
 axes[0].set_title("Preprocessing Pipeline: Cumulative Accuracy", fontsize=11)
 axes[0].set_ylim(0.75, 1.02)
 axes[0].axhline(means[0], color="gray", linestyle="--", lw=1, alpha=0.6)
-axes[0].legend(fontsize=8)
 
 deltas      = [means[i] - means[i-1] for i in range(1, len(means))]
 delta_cols  = ["#27ae60" if d >= 0 else "#e74c3c" for d in deltas]
-axes[1].barh(descriptions[1:][::-1], deltas[::-1], color=delta_cols[::-1],
-             edgecolor="white", height=0.6)
-for d, yp in zip(deltas[::-1], range(len(deltas))):
-    axes[1].text(d + 0.0005, yp, f"+{d:.4f}", va="center", fontsize=9, fontweight="bold")
+desc_rev    = descriptions[1:][::-1]
+delta_rev   = deltas[::-1]
+dcol_rev    = delta_cols[::-1]
+y_pos       = np.arange(len(delta_rev))
+axes[1].barh(y_pos, delta_rev, color=dcol_rev, edgecolor="none", height=0.55)
+for yp, d in zip(y_pos, delta_rev):
+    axes[1].text(d + 0.0008, yp, f"+{d:.4f}", va="center", fontsize=9.5, fontweight="bold")
+axes[1].set_yticks(y_pos)
+axes[1].set_yticklabels(desc_rev, fontsize=9.5)
 axes[1].axvline(0, color="black", lw=0.8)
 axes[1].set_xlabel("Accuracy Improvement over Previous Step")
-axes[1].set_title("Marginal Gain per Step", fontsize=11)
-plt.tight_layout()
+axes[1].set_title("Marginal Gain per Feature Engineering Step", fontsize=11)
+axes[1].set_xlim(0, max(delta_rev) * 1.35)
+plt.tight_layout(pad=3.0)
 plt.savefig("outputs/q2_preprocessing.png", dpi=150, bbox_inches="tight")
 plt.show()
 ```
@@ -557,9 +562,12 @@ Temporal segments are the dominant contributor (+6.7pp), confirming that the
 temporal evolution of the 5-minute window — not just its global distribution —
 is the primary discriminative signal.
 
-## 2.6 Final Feature Set (716 features)
+## Final Feature Set (716 Features)
 
-The final feature set extended the pipeline by applying richer per-channel
+When I looked into what features HAR papers typically use, I noticed that axis-specific
+statistical combinations and pairwise cross-channel magnitudes appear frequently as
+effective descriptors. I implemented these ideas, which resulted in the 716-feature
+set described below. It extends the pipeline by applying richer per-channel
 statistics to 16 base channels instead of 6:
 
 | Group | # Features | Channels | Description |
@@ -579,9 +587,9 @@ features are: diff\_mean, diff\_std, diff\_abs\_mean, diff\_abs\_max, diff\_ener
 first\_60\_mean, last\_60\_mean, last\_minus\_first\_60.
 
 
-# 3. Temporal Alignment of Activity Labels
+# Temporal Alignment
 
-## 3.1 Window-Level Prediction Strategy
+## Window-Level Prediction Strategy
 
 Each CSV file spans **exactly 300 seconds (5 minutes)** with a single class label.
 I made one prediction per file — not per second. The modelling task is:
@@ -593,15 +601,15 @@ no additional supervision while requiring a temporal aggregation step. The key
 challenge is therefore not label alignment but *feature design*: which properties
 of the 300-timestep sequence distinguish the activities?
 
-## 3.2 Axis-Specific Features and Gravity Direction
+## Axis-Specific Features and Gravity Direction
 
 The most important temporal insight emerged from understanding the physics of the
 sensor data. The mean channels (mean\_x, mean\_y, mean\_z) record the *average*
 acceleration per second, which contains both:
 
-- **Gravity component (DC):** constant for a given phone orientation,
+- **Gravity component (DC):** constant for a given phone orientation and
   encodes the angle between phone and gravitational vertical
-- **Motion component (AC):** due to actual movement, has zero mean over long
+- **Motion component (AC):** due to actual movement and has zero mean over long
   windows
 
 Per-user normalisation removes the gravity DC component as if it were noise.
@@ -683,7 +691,7 @@ confirms that `first_60_mean`, `last_60_mean`, and `last_minus_first_60` —
 computed for each of the six channels — capture this directional drift
 reliably and are unique to each activity.
 
-## 3.3 Temporal Feature Groups and Their Relative Importance
+## Temporal Feature Groups and Their Relative Importance
 
 I used four distinct temporal strategies, each targeting a different aspect of
 the temporal structure:
@@ -745,18 +753,18 @@ plt.show()
 | FFT + peaks | 50 | 14.2% | 0.284% | **Most efficient** — cadence frequency |
 | 10-window (5ch) | 250 | 30.0% | 0.120% | **Largest total** — temporal evolution |
 
-The FFT+peak group is the most *efficient* per feature (0.284% gain/feature),
-because dominant frequency and peak rate directly encode the activity cadence:
-running has a ~2–3× higher step frequency than walking. The 10-window group
+The FFT+peak group is the most efficient per feature (0.284% gain/feature),
+because dominant frequency and peak rate directly encode the activity cadence.
+Running has roughly 2 to 3 times higher step frequency than walking. The 10-window group
 has the highest total gain because 250 features comprehensively capture how
 each channel evolves across the 10 time segments.
 
-Importantly, the axis-specific mean group (mean\_x/y/z) has **0.122% gain
-per feature** — higher than std channels (0.105%) and sum features (0.112%) —
-confirming that the gravity direction carries more discriminative information
+Importantly, the axis-specific mean group (mean\_x/y/z) has 0.122% gain
+per feature, which is higher than std channels (0.105%) and sum features (0.112%).
+This confirms that the gravity direction carries more discriminative information
 per feature than rotation-invariant summaries.
 
-## 3.4 Jerk Features: Temporal Differentiation
+## Jerk Features
 
 The jerk signal is the first-order temporal derivative of the mean channels:
 $j_x[t] = \text{mean\_x}[t] - \text{mean\_x}[t-1]$. Computing jerk serves two
@@ -777,7 +785,7 @@ purposes:
    suggesting the standard stats9 features (which include min/max/skewness)
    already captured this asymmetry implicitly.
 
-## 3.5 Spectral Analysis of the Temporal Signal
+## Spectral Analysis
 
 I applied Welch's method to estimate the power spectral density of each
 channel, extracting five frequency-domain features:
@@ -795,13 +803,13 @@ These were computed for five channels with the clearest spectral structure:
 acc\_mag, std\_mag, std\_x, std\_y, std\_z.
 
 
-# 4. Ablation Study
+# Ablation Study
 
 I ran 31 model iterations, each changing a single design choice. This section
 presents the most informative controlled comparisons from this run history.
 All Kaggle scores are on the public leaderboard (50% of test set, macro-F1).
 
-## 4.1 Normalisation Strategy Ablation
+## Normalisation Strategy Ablation
 
 I compared three normalisation strategies using representative single-change
 runs. All runs in each phase share the same feature set and ensemble size where
@@ -872,7 +880,7 @@ projection that is shared across all users performing the same activity.
 The final improvement of +0.017 from run18 to run31 (per-user to no-norm with
 full feature set) exceeds any single feature engineering change.
 
-## 4.2 Augmentation Ablation: The OOF/Kaggle Paradox
+## Augmentation Ablation
 
 ```{python}
 #| label: fig-aug-ablation
@@ -947,7 +955,7 @@ The augmentation paradox is therefore resolved: augmentation *reduces*
 LOUO-CV performance slightly (model sees noisier data) but *increases* Kaggle
 performance (model learns noise-robust, user-agnostic patterns).
 
-## 4.3 Feature Group Ablation
+## Feature Group Ablation
 
 The following table summarises controlled feature changes, each comparing two
 runs that differ by exactly one design variable. Runs are ordered chronologically.
@@ -1004,7 +1012,7 @@ plt.show()
 |---|---|---|---:|---|
 | +user\_ctx (45 features) | run17 | run18 | **+0.034** | Z-score vs user's own mean — most valuable single addition |
 | drop norm + add trend | run22 | run23 | **+0.010** | Gravity direction unlocked after removing per-user norm |
-| 716-feat notebook set | run25 | run27 | **+0.026** | Axis-specific + cross-mag + windows |
+| 716-feat HAR feature set | run25 | run27 | **+0.026** | Axis-specific + cross-mag + windows |
 | +seg\_energy (30 feats) | run25 | run26 | +0.007 | Segment energy helps marginally |
 | revert regularisation | run28 | run29 | +0.007 | Strong reg (λ=2) under-fitted; reverted to λ=1 |
 | revert to 716 + RF | run29 | run30 | +0.004 | 34 new features were redundant with cross\_mag |
@@ -1014,7 +1022,7 @@ plt.show()
 | +extra stats (7/signal) | run23 | run24 | **−0.017** | Correlated with existing stats; adds noise |
 | no augmentation | run23 | run25 | **−0.016** | Augmentation prevents user-pattern memorisation |
 
-## 4.4 Ensemble Architecture Ablation
+## Ensemble Architecture Ablation
 
 ```{python}
 #| label: fig-ensemble-ablation
@@ -1064,16 +1072,16 @@ plt.savefig("outputs/q4_ensemble_ablation.png", dpi=150, bbox_inches="tight")
 plt.show()
 ```
 
-The key finding is that **ensemble diversity matters more than size**: 7 models
+The key finding is that **ensemble diversity matters more than size**. 7 models
 (run25: 5 LGB + 2 XGB) outperform 30 models if those 30 are all the same
 family. The heterogeneous ensemble run30 (5 LGB + 2 XGB + 1 RF = 8 models)
-achieves 0.7893 — better than run25's 7 models (0.7633) and comparable to
+achieves 0.7893, which is better than run25's 7 models (0.7633) and comparable to
 run18's 24 models (0.7738 on a different feature set). Random Forest adds
 a fundamentally different split criterion (information gain on random feature
-subsets vs gradient-based gain), producing errors that are uncorrelated with
+subsets compared to gradient-based gain), producing errors that are uncorrelated with
 boosting-based models.
 
-## 4.5 Learning Rate and Training Depth Ablation
+## Learning Rate Ablation
 
 ```{python}
 #| label: fig-lr-ablation
@@ -1136,7 +1144,7 @@ fitting training patterns, but the Kaggle score improves (+0.001), consistent
 with the augmentation paradox: a more conservative optimum generalises better to
 entirely unseen test users.
 
-## 4.6 Model Family Ablation
+## Model Family Ablation
 
 ```{python}
 #| label: fig-model-family
@@ -1178,7 +1186,7 @@ LightGBM's leaf-wise growth finds the split with the highest gain globally
 features with many class-specific non-linear interactions, leaf-wise growth
 produces more informative trees within the same `num_leaves = 31` budget.
 
-## 4.7 Temporal Segment Count Ablation
+## Number of Temporal Segments Ablation
 
 ```{python}
 #| label: fig-segment-ablation
@@ -1211,7 +1219,7 @@ limit theorem requires at least ~30 samples for normally distributed statistics)
 I chose n=10 to balance temporal resolution against statistical stability.
 
 
-# Final Model & Kaggle Results
+# Final Model and Kaggle Results
 
 ## Model Architecture
 
@@ -1252,15 +1260,16 @@ on 716 hand-crafted features.
 
 ```{python}
 #| label: fig-run-progress
-#| fig-cap: "Kaggle public LB score and OOF macro-F1 across my model iterations. The biggest jump is at run27 (axis-specific mean features + GroupKFold). run31 achieves the best Kaggle score (0.7906) with lr=0.01 despite a slightly lower OOF than run30, showing the lower learning rate generalises better to unseen users."
+#| fig-cap: "Kaggle public LB score and OOF macro-F1 across my model iterations. The biggest jump is at run27 (axis-specific mean features + GroupKFold). run31 achieves the best Kaggle score (0.7906). run32 tested adding augmentation to the 716-feature set but scored 0.7731, which is actually lower than run31 (highlighted in red). This shows that augmentation only helps when the feature set is simpler."
 #| fig-width: 10
 #| fig-height: 5
 
 runs   = ["run23\n(augment.)", "run25\n(no aug.)", "run26\n(+energy\nper seg.)",
           "run27\n(716 feat\n+GroupKF)", "run28\n(750 feat\nreg↑)",
-          "run29\n(750 feat\nreg fix)", "run30\n(716 feat\n+RF)", "run31\n(lr=0.01)"]
-kaggle = [0.7792, 0.7633, 0.7703, 0.7895, 0.7785, 0.7853, 0.7893, 0.7906]
-oof    = [None,   0.6976, 0.6981, 0.7299, 0.7248, 0.7266, 0.7289, 0.7266]
+          "run29\n(750 feat\nreg fix)", "run30\n(716 feat\n+RF)", "run31\n(lr=0.01)",
+          "run32\n(716 feat\n+aug)"]
+kaggle = [0.7792, 0.7633, 0.7703, 0.7895, 0.7785, 0.7853, 0.7893, 0.7906, 0.7731]
+oof    = [None,   0.6976, 0.6981, 0.7299, 0.7248, 0.7266, 0.7289, 0.7266, 0.6948]
 
 x = np.arange(len(runs))
 fig, ax = plt.subplots(figsize=(11, 5))
@@ -1272,6 +1281,7 @@ ax.plot([i for i,v in valid_o], [v for i,v in valid_o], "s--",
         color="#3498db", lw=1.5, ms=6, label="OOF macro-F1", zorder=3)
 ax.axvline(7, color="#27ae60", linestyle=":", lw=2, alpha=0.7,
            label="Best: run31 (0.7906)")
+ax.axvspan(7.5, 8.5, alpha=0.07, color="#e74c3c", zorder=0)
 ax.axhline(0.7906, color="#27ae60", linestyle=":", lw=1.2, alpha=0.5)
 for i, v in valid_k:
     ax.text(i, v + 0.003, f"{v:.4f}", ha="center", fontsize=8,
@@ -1292,7 +1302,7 @@ plt.show()
 
 ```{python}
 #| label: fig-confusion
-#| fig-cap: "OOF normalised confusion matrix for my best model (run31). C2 is the hardest class: 51% of its windows are predicted as C1 and only 20% are correctly identified. C0 and C4 are classified reliably (97% and 88%)."
+#| fig-cap: "Normalised confusion matrix from cross-validation for my best model (run31). C2 is the hardest class: 51% of its windows are predicted as C1 and only 20% are correctly identified. C0 and C4 are classified reliably (97% and 88%)."
 #| fig-width: 7
 #| fig-height: 6
 
@@ -1309,8 +1319,8 @@ fig, ax = plt.subplots(figsize=(7, 6))
 sns.heatmap(cm, annot=True, fmt=".2f", cmap="Blues", ax=ax,
             xticklabels=LABELS, yticklabels=LABELS,
             linewidths=0.5, vmin=0, vmax=1)
-ax.set_title("OOF Confusion Matrix — Best Model (run31)\n"
-             "OOF macro-F1 = 0.7266  |  Kaggle public LB = 0.7906", fontsize=11)
+ax.set_title("CV Confusion Matrix — Best Model (run31)\n"
+             "CV macro-F1 = 0.7266  |  Kaggle public LB = 0.7906", fontsize=11)
 ax.set_xlabel("Predicted Class")
 ax.set_ylabel("True Class")
 plt.tight_layout()
@@ -1318,7 +1328,7 @@ plt.savefig("outputs/final_confusion_matrix.png", dpi=150, bbox_inches="tight")
 plt.show()
 ```
 
-Per-class OOF performance (run31):
+Per-class performance from cross-validation (run31):
 
 | Class | Precision | Recall | F1 |
 |-------|-----------|--------|----|
@@ -1337,7 +1347,15 @@ identical std-channel distributions, and only the gravity projection and its
 temporal drift separate them. Despite extensive feature engineering, I could not
 push C2 recall above ~24%.
 
-An interesting finding emerged from the final run: **run31 achieves the best Kaggle
+After run31, I tested adding augmentation to the same 716-feature set (run32).
+The result was **0.7731**, which is 0.0175 lower than run31. This is a reversal of
+what happened with the simpler 382-feature set, where augmentation helped (+0.016).
+The explanation is that with 716 features the model already generalises well enough
+to unseen users through diverse feature representations. Adding augmented copies
+adds noise to the training distribution without providing additional discriminative
+information, which makes the already-good model slightly worse.
+
+An interesting finding emerged from the lr=0.01 change: **run31 achieves the best Kaggle
 score (0.7906) despite a lower OOF than run30 (0.7266 vs 0.7289)**, yielding an
 increased OOF→Kaggle gap:
 
@@ -1348,11 +1366,11 @@ increased OOF→Kaggle gap:
 | run30 | 0.7289 | 0.7893 | +0.060 |
 | **run31** | **0.7266** | **0.7906** | **+0.064** |
 
-I interpret this as a bias-variance trade-off: with lr=0.01 and ~483 best
-iterations (vs ~161 at lr=0.03), the model takes smaller, more conservative steps.
-The OOF score is slightly lower because the model under-fits relative to training
-users — but on entirely unseen test users, this conservative optimum generalises
-better, as it is less likely to have captured training-user-specific signal patterns.
+I interpret this as a bias-variance trade-off. With lr=0.01 and around 483 best
+iterations (compared to about 161 at lr=0.03), the model takes smaller, more conservative steps.
+The CV score is slightly lower because the model under-fits relative to training
+users, but on entirely unseen test users this conservative optimum generalises
+better because it is less likely to have captured training-user-specific signal patterns.
 
 
 # Summary
@@ -1360,8 +1378,134 @@ better, as it is less likely to have captured training-user-specific signal patt
 | Aspect | Decision | Rationale |
 |--------|----------|-----------|
 | Normalisation | None | Gravity projection in mean_x/y/z is class-discriminative |
-| CV strategy | GroupKFold by user | Mirrors train/test split; prevents user leakage |
+| CV strategy | GroupKFold by user | Mirrors train/test split and prevents user leakage |
 | Feature set | 716 hand-crafted | Axis stats + temporal segments + FFT + windows |
-| Model | LightGBM ensemble | Best CV accuracy; handles imbalance via sample weights |
-| Imbalance handling | Balanced weights + threshold opt. | Macro-F1 objective; C2, C4, C5 severely underrepresented |
+| Model | LightGBM ensemble | Best CV accuracy and handles imbalance via sample weights |
+| Imbalance handling | Balanced weights + threshold opt. | Macro-F1 objective with C2, C4, C5 severely underrepresented |
 | Best Kaggle score | **0.7906** (public LB, 50% of test) | run31 (lr=0.01, patience=300) |
+
+\newpage
+
+# Appendix
+
+## Table A: Run Summary — Scores and Model Setup
+
+```{=latex}
+\footnotesize
+```
+
+| Run | Kaggle F1 | Environment | # Feat | Norm | CV | Augmentation | Ensemble |
+|---|---:|---|---:|---|---|---|---|
+| Baseline A | 0.7531 | Kaggle | ~100 | Window | — | No | 1 LGB |
+| Baseline B | 0.7366 | Kaggle | ~100 | Window | — | No | 1 LGB |
+| run03 | — | Local→Kaggle | ~216 | Window | LOUO 5f | No | CNN + 1 LGB |
+| run04 | 0.7042 | Kaggle | ~216 | Window | LOUO 5f | No | CNN + 1 LGB |
+| run05 | 0.7337 | Kaggle | ~1132 | Window×2 | LOUO 5f | No | 10 LGB |
+| run06 | 0.7501 | Kaggle | 373 | None | LOUO 5f | No | 4 LGB configs |
+| run07 | **0.7707** | Kaggle | 373 | Per-user | LOUO 5f | No | 3 LGB configs |
+| run07imp | 0.7519 | Local | 150–200 | Per-user | Local | No | 15 LGB |
+| run08 | 0.7559 | Kaggle | 373 | Per-user | LOUO 5f | TTA + noise | LGB |
+| run12 | 0.7295 | Kaggle | ~150 | Per-user | LOUO 5f | No | TCN+Transf.+LGB |
+| run15 | 0.7565 | Local | 50 | Per-user | Local | No | 15 LGB |
+| run17 | 0.7400 | Kaggle | ~428 | Per-user | LOUO 5f | No | 30 LGB + thresh. opt |
+| run18 | **0.7738** | Kaggle | 418 | Per-user | LOUO 5f | Noise C2,C4,C5 | 15 LGB + 9 XGB + thresh. opt |
+| run19 | 0.7392 | Kaggle | ~364 | Per-user | LOUO 5f | Yes | 15 LGB + 9 XGB + thresh. opt |
+| run20 | 0.7593 | Kaggle | 445 | Per-user | LOUO 5f | Noise C2,C4,C5 | 15 LGB + 9 XGB + 5 RF + thresh. opt |
+| run22 | 0.7691 | Kaggle | 424 | Per-user | LOUO 5f | Noise C2,C4,C5 | 15 LGB + 9 XGB + thresh. opt |
+| run23 | **0.7792** | Kaggle | 382 | **None** | LOUO 5f | Noise C2×5,C4×5,C5×2,C3×1 | 15 LGB + 9 XGB + thresh. opt |
+| run24 | 0.7618 | Kaggle | ~417 | None | LOUO 5f | Noise (same) | 15 LGB + 9 XGB + thresh. opt |
+| run25 | 0.7633 | Local+Kaggle | 382 | None | LOUO 5f | **No** | 5 LGB + 2 XGB + thresh. opt |
+| run26 | 0.7703 | Local+Kaggle | 412 | None | LOUO 5f | No | 5 LGB + 2 XGB + thresh. opt |
+| run27 | **0.7895** | Local+Kaggle | **716** | None | LOUO 5f | No | 5 LGB + 2 XGB + thresh. opt |
+| run28 | 0.7785 | Local+Kaggle | 750 | None | LOUO 5f | No | 5 LGB + 2 XGB + 1 RF + thresh. opt |
+| run29 | 0.7853 | Local+Kaggle | 750 | None | LOUO 5f | No | 5 LGB + 2 XGB + 1 RF + thresh. opt |
+| run30 | 0.7893 | Local+Kaggle | 716 | None | LOUO 5f | No | 5 LGB + 2 XGB + 1 RF + thresh. opt |
+| **run31** | **0.7906** | Local+Kaggle | **716** | **None** | LOUO 5f | No | 5 LGB + 2 XGB + 1 RF + thresh. opt |
+| run32 | 0.7731 | Local+Kaggle | 716 | None | LOUO 5f | Noise C2×5,C4×5,C5×2,C3×1 | 5 LGB + 2 XGB + 1 RF + thresh. opt |
+
+```{=latex}
+\normalsize
+```
+
+## Table B: Run Summary — Feature Groups and Key Changes
+
+```{=latex}
+\footnotesize
+```
+
+| Run | Feature Groups | Key Change |
+|---|---|---|
+| Baseline A/B | Basic channel stats | First submissions |
+| run03 | ch-stats9 + seg + autocorr + spectral | First LOUO-CV |
+| run04 | Same as run03 | Switch to NPZ loading |
+| run05 | Same features twice (raw + window-norm) | Dropped CNN |
+| run06 | core-373 (no raw mean channels) | No normalization |
+| run07 | core-373 | Per-user normalization |
+| run07imp | core-373 selected (150–200) | Aggressive feature pruning |
+| run08 | core-373 | TTA + minority oversampling |
+| run12 | core-373 selected (50–200) | TCN + Transformer attempt |
+| run15 | core-373 selected (50) | 86.6% feature reduction |
+| run17 | core-373 + slope + 5-seg + 2nd-jerk (+55) | Threshold opt (Nelder-Mead) |
+| run18 | core-373 + user\_ctx (45) = 418 | User context z-scores |
+| run19 | core-373 − mag\_mean ≈ 364 | Ablation: no mag\_mean |
+| run20 | core-373 + user\_ctx + sma (27) = 445 | SMA features + RF |
+| run22 | core-373 + user\_ctx + jerk\_asym (6) = 424 | Jerk asymmetry |
+| run23 | core-373 − mag\_mean + trend (18) = 382 | No norm + trend features |
+| run24 | run23 + extra stats per channel ≈ 417 | Extra statistics (hurt) |
+| run25 | same as run23 = 382 | No augmentation |
+| run26 | run23 + seg-energy = 412 | Segment energy features |
+| run27 | axis\_stat(156)+acc\_mag(52)+cross\_mag(156)+sum\_feat(52)+fft\_peak(50)+win(250) = 716 | Full HAR feature set |
+| run28 | run27 + tilt(6)+covcorr(6)+mean\_xyz\_fft(18)+step\_rhythm(4) = 750 | New physics features (hurt) |
+| run29 | same as run28 = 750 | Reverted regularization |
+| run30 | same as run27 = 716 | Reverted to 716 features + RF |
+| run31 | same as run27/30 = 716 | lr 0.03→0.01 + patience 300 |
+| run32 | same as run27/30/31 = 716 | + augmentation (C2×5, C4×5, C5×2, C3×1), hurt Kaggle score |
+
+```{=latex}
+\normalsize
+```
+
+## Feature Group Abbreviations
+
+The following shorthand is used in the tables above. All statistics (stats9) include: mean, std, min, max, range, median, IQR, skewness, kurtosis. Stats18 additionally includes Q5/Q10/Q25/Q75/Q90/Q95, energy, RMS, MAD. Diff8 includes diff\_mean, diff\_std, diff\_abs\_mean, diff\_abs\_max, diff\_energy, first\_60\_mean, last\_60\_mean, last\_minus\_first\_60.
+
+```{=latex}
+\footnotesize
+```
+
+| Abbreviation | Description | Count |
+|---|---|---:|
+| `std_ch` | stats9 of std\_x, std\_y, std\_z | 27 |
+| `mag_std` | stats9 of magnitude of std channels | 9 |
+| `mag_mean` | stats9 of magnitude of mean channels | 9 |
+| `jerk_ch` | stats9 of jerk per axis (diff of mean channels) | 27 |
+| `mag_jerk` | stats9 of jerk magnitude | 9 |
+| `seg_mag` | 10+20 temporal segments of mag\_std and mag\_jerk | 120 |
+| `seg_std_ch` | 10 segments (mean+std each) of std\_x/y/z | 60 |
+| `seg_jerk_ch` | 10 segments of jerk\_x/y/z | 60 |
+| `ac_jerk` | autocorrelation of mag\_jerk at 7 lags | 7 |
+| `ac_std_ch` | autocorrelation of std\_x/y/z at 4 lags each | 12 |
+| `spectral` | FFT features for mag\_jerk, mag\_std, std\_x/y/z | 25 |
+| `xcorr` | cross-correlations between jerk and std pairs | 6 |
+| `zerocross` | zero-crossing rate of mag\_jerk | 1 |
+| `peaks` | peak rate of mag\_jerk | 1 |
+| `user_ctx` | z-score deviation vs user's own mean | 45 |
+| `sma` | signal magnitude area (L1 norm) per channel | 27 |
+| `jerk_asym` | mean of positive and negative jerk values per axis | 6 |
+| `trend` | first\_60, last\_60, last minus first mean per channel | 18 |
+| `axis_stat` | stats18 + diff8 per axis channel (mean\_x/y/z + std\_x/y/z) | 156 |
+| `acc_mag` | stats18 + diff8 for acc\_mag and std\_mag | 52 |
+| `cross_mag` | stats18 + diff8 for xy/xz/yz\_mag and std variants | 156 |
+| `sum_feat` | stats18 + diff8 for mean\_sum and std\_sum | 52 |
+| `fft_peak_5ch` | FFT (6) + peak (4) features for 5 channels | 50 |
+| `win_10x5ch` | 10 windows × 5 stats for 5 channels | 250 |
+| `tilt` | tilt angle statistics over window | 6 |
+| `covcorr` | pairwise covariance and correlation of mean\_x/y/z | 6 |
+| `mean_xyz_fft` | FFT features of mean\_x, mean\_y, mean\_z | 18 |
+| `step_rhythm` | inter-peak interval stats of std\_mag time series | 4 |
+
+The **core 373-feature set** (run07 to run22) = std\_ch + mag\_std + mag\_mean + jerk\_ch + mag\_jerk + seg\_mag + seg\_std\_ch + seg\_jerk\_ch + ac\_jerk + ac\_std\_ch + spectral + xcorr + zerocross + peaks = **373 features total**.
+
+```{=latex}
+\normalsize
+```

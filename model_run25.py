@@ -1,23 +1,4 @@
-"""
-model_run25.py — run23 features, NO augmentation, reduced models
-
-run23 (0.7792): augmentation + 24 models + run23 features
-run24 (0.7618): extra_stats added → regression (correlated/redundant features)
-run25 tests: does removing augmentation help?
-
-Hypothesis: the notebook (0.7923) uses no augmentation and beats run23 (0.7792).
-Augmented samples are noise-copies of training users → model learns user-specific
-patterns that don't transfer to test users. class_weight='balanced' compensates
-for the class imbalance instead.
-
-Changes from run23:
-  1. NO data augmentation  (main hypothesis)
-  2. Fewer models: 5 LGB + 3 XGB = 8 final (was 24) — faster runtime
-  3. CV: 1 LGB config per fold instead of 9  (was 45 total CV models)
-  Expected runtime: ~35-50 min on Kaggle, ~20-30 min on laptop.
-
-Features: identical to run23 (391 features, no mag_mean, trend features).
-"""
+# run25: 382 features (run23 base), 5 LGB + 2 XGB, lr=0.03, no augmentation
 
 import numpy as np
 import pandas as pd
@@ -49,9 +30,7 @@ print(f"Output dir: {OUT_DIR}")
 CLASS_NAMES = ["sit/stand", "walk_flat", "walk_down", "walk_up", "running", "other"]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING — raw, no per-user normalization
-# ──────────────────────────────────────────────────────────────────────────────
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -67,9 +46,7 @@ def find_npz(name):
     if local.exists(): return str(local)
     raise FileNotFoundError(f"Cannot find {name}")
 
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
+print("loading data...")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -90,12 +67,10 @@ unique, counts = np.unique(y_tr, return_counts=True)
 print(f"Train: {X_tr.shape}  Test: {X_te.shape}  (no normalization, no augmentation)")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
-print(f"  NOTE: class_weight='balanced' handles imbalance instead of augmentation")
+print(f"  class_weight='balanced' handles imbalance")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS — identical to run23
-# ──────────────────────────────────────────────────────────────────────────────
+# feature helpers
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s, 1),
@@ -140,9 +115,7 @@ def trend3(s):
     return [first, last, last - first]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION — 391 features, identical to run23
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction — 382 features
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -193,20 +166,15 @@ print("\nExtracting features...")
 X_tr_feat = extract(X_tr)
 X_te_feat = extract(X_te)
 assert X_tr_feat.shape[1] == 382, f"Expected 382, got {X_tr_feat.shape[1]}"
-print(f"  Features: {X_tr_feat.shape[1]}  (run23 feature set: 373 - 9 mag_mean + 18 trend)")
+print(f"  Features: {X_tr_feat.shape[1]}")
 
 scaler   = StandardScaler()
 X_tr_sc  = scaler.fit_transform(X_tr_feat)
 X_te_sc  = scaler.transform(X_te_feat)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# LOO-CV — 5 folds, 3 LGB configs per fold = 15 CV models total
-# No augmentation: train on original data only, class_weight handles imbalance
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("LOO-CV (5 folds × 1 LGB = 5 models, no augmentation)")
-print("="*60)
+# cv — 5 folds
+print("\ncv (5 folds x 1 LGB)...")
 
 unique_users = np.unique(users)
 user_folds   = {u: i % 5 for i, u in enumerate(unique_users)}
@@ -242,13 +210,12 @@ per_class_f1 = f1_score(y_tr, loo_preds, average=None)
 print(f"\nBaseline CV macro F1: {baseline_f1:.4f}")
 print("Per-class F1:", [f"{f:.3f}" for f in per_class_f1])
 
-# Confusion matrix
 cm = confusion_matrix(y_tr, loo_preds, normalize='true')
 print("\nCV Confusion Matrix (row=true, col=predicted):")
 print(f"  {'':16}" + "".join(f"    C{c}" for c in range(6)))
 for i in range(6):
     row = "".join(f"  {cm[i,j]:.2f}" for j in range(6))
-    flag = "  ← C2 bottleneck" if i == 2 else ""
+    flag = "  <- C2 bottleneck" if i == 2 else ""
     print(f"  C{i} {CLASS_NAMES[i]:<14}{row}{flag}")
 
 fig, ax = plt.subplots(figsize=(8, 6))
@@ -262,12 +229,8 @@ plt.savefig(OUT_DIR / 'run25_confusion_matrix.png', dpi=150, bbox_inches='tight'
 plt.close()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("THRESHOLD OPTIMIZATION")
-print("="*60)
+# threshold optimization
+print("\nthreshold optimization...")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -315,12 +278,8 @@ plt.savefig(OUT_DIR / 'run25_per_class_f1.png', dpi=150, bbox_inches='tight')
 plt.close()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — 5 LGB + 3 XGB = 8 models (reduced for speed)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FINAL TRAINING (5 LightGBM + 2 XGBoost = 7 models)")
-print("="*60)
+# final training — 5 LGB + 2 XGB
+print("\nfinal training (5 LGB + 2 XGB)...")
 
 sw = compute_sample_weight('balanced', y_tr)
 final_probas = []
@@ -358,9 +317,7 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE
-# ──────────────────────────────────────────────────────────────────────────────
+# feature group importance
 FEATURE_GROUPS = [
     (  0,  27, "std_channels"),
     ( 27,  36, "mag_std"),
@@ -378,9 +335,7 @@ FEATURE_GROUPS = [
     (364, 382, "trend_features"),
 ]
 
-print("\n" + "="*60)
-print("FEATURE GROUP IMPORTANCE")
-print("="*60)
+print("\nfeature group importance (LGB gain, avg 5 models):")
 imp_matrix = np.zeros((len(lgb_models), X_tr_sc.shape[1]))
 for i, m in enumerate(lgb_models):
     imp_matrix[i] = m.booster_.feature_importance(importance_type='gain')
@@ -406,25 +361,12 @@ plt.savefig(OUT_DIR / 'run25_feature_importance.png', dpi=150, bbox_inches='tigh
 plt.close()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run25.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train rate):")
-for c in range(6):
-    cnt = (preds == c).sum()
-    exp = int(len(preds) * counts[c] / len(y_tr))
-    print(f"  Class {c}: {cnt:5d}  (expected ~{exp})")
-
-print(f"\nOptimal scales:          {np.round(optimal_scales, 3)}")
-print(f"CV F1 (threshold-opt):   {opt_f1:.4f}")
-print(f"CV F1 (baseline argmax): {baseline_f1:.4f}")
-print(f"Baseline run23:          0.7792  (augmentation + 24 models)")
-print(f"Notebook no_magnitude:   0.7923  (no augmentation, 1 model)")
-print(f"\nIf run25 > run23: augmentation was hurting → scale up models for run26")
-print(f"If run25 < run23: augmentation was helping → revert and try other changes")
+print(f"submission saved to {out_path}")
+print(f"CV F1: {baseline_f1:.4f}  -> after threshold opt: {opt_f1:.4f}")
+print(f"optimal scales: {np.round(optimal_scales, 3)}")

@@ -1,17 +1,4 @@
-"""
-model_run24.py — run23 + remove mag_mean + extra stats for dominant channels
-
-run23 (0.7792): 391 features, no normalization, trend features
-run24 changes (two targeted changes based on run23 output):
-  1. REMOVE mag_mean — only 2.7% importance, gravity-dominated without normalization
-     (sqrt(mx²+my²+mz²) ≈ 9.8 m/s² for all activities → useless noise)
-  2. ADD 7 extra stats (energy, MAD, RMS, q05, q10, q90, q95) for sx, sy, sz, mag_std
-     — these are the dominant features (sy_median=10.95%, mag_std_iqr=10.57%)
-     — more distributional resolution helps separate C2 from C1
-
-Total: 391 - 9 + 28 = 410 features
-Saves: confusion matrix, per-class F1, and feature importance as PNG graphs.
-"""
+# run24: 410 features (run23 - 9 mag_mean + 28 extra stats), 15 LGB + 9 XGB, augmentation
 
 import numpy as np
 import pandas as pd
@@ -42,9 +29,7 @@ print(f"Output dir: {OUT_DIR}")
 CLASS_NAMES = ["sit/stand", "walk_flat", "walk_down", "walk_up", "running", "other"]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING — raw, no per-user normalization
-# ──────────────────────────────────────────────────────────────────────────────
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -60,9 +45,7 @@ def find_npz(name):
     if local.exists(): return str(local)
     raise FileNotFoundError(f"Cannot find {name}")
 
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
+print("loading data...")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -85,9 +68,7 @@ for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA AUGMENTATION — identical to run18/run23
-# ──────────────────────────────────────────────────────────────────────────────
+# data augmentation (same as run18/run23)
 AUG_CONFIG    = {2: 5, 4: 5, 5: 2, 3: 1}
 AUG_NOISE_STD = 0.05
 
@@ -117,9 +98,7 @@ for u, c in zip(aug_unique, aug_counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr_aug)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# feature helpers
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s, 1),
@@ -128,8 +107,7 @@ def stats9(s):
             np.array([kurtosis(r) for r in s])]
 
 def stats_extra7(s):
-    """energy, MAD, RMS, q05, q10, q90, q95 — richer distribution description.
-    Targets sx/sy/sz/mag_std which are the most important feature groups."""
+    # energy, MAD, RMS, q05, q10, q90, q95 for dominant channels
     energy = (s**2).mean(1)
     return [energy,
             np.abs(s - s.mean(1, keepdims=True)).mean(1),   # MAD
@@ -176,13 +154,7 @@ def trend3(s):
     return [first, last, last - first]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION — 410 features
-#   373 baseline
-#   - 9  (mag_mean removed — gravity-dominated without normalization)
-#   + 28 (extra_stats7 for sx, sy, sz, mag_std — dominant feature groups)
-#   + 18 (trend features, same as run23)
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction — 410 features
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -192,56 +164,41 @@ def extract(X):
     jy = np.diff(my, axis=1)
     jz = np.diff(mz, axis=1)
 
-    # mag_mean intentionally NOT computed — gravity-dominated, 2.7% importance in run23
+    # mag_mean omitted (gravity-dominated without normalization)
     mag_std  = np.sqrt(sx**2 + sy**2 + sz**2)
     mag_jerk = np.sqrt(jx**2 + jy**2 + jz**2)
 
     parts = []
 
-    # A. Std channels (27)
     for ch in [sx, sy, sz]:       parts += stats9(ch)
-    # B. Std magnitude (9)
     parts += stats9(mag_std)
-    # C. mag_mean REMOVED
-    # D. Jerk per axis (27)
     for ch in [jx, jy, jz]:       parts += stats9(ch)
-    # E. Jerk magnitude (9)
     parts += stats9(mag_jerk)
-    # F. Segments (120)
     for sig in [mag_std, mag_jerk]:
         for ns in [10, 20]:
             parts += seg(sig, ns)
-    # G. Std channel segments (60)
     for ch in [sx, sy, sz]:       parts += seg(ch, 10)
-    # H. Jerk channel segments (60)
     for ch in [jx, jy, jz]:       parts += seg(ch, 10)
-    # I. Autocorrelation (19)
     for lag in [1, 2, 5, 10, 20, 30, 60]:
         parts.append(ac(mag_jerk, lag))
     for ch in [sx, sy, sz]:
         for lag in [1, 5, 10, 30]:
             parts.append(ac(ch, lag))
-    # J. Spectral (25)
     for sig in [mag_jerk, mag_std, sx, sy, sz]:
         parts.append(spectral5(sig))
-    # K. Cross-correlations (6)
     for a, b in [(jx,jy),(jx,jz),(jy,jz)]:
         parts.append(xcorr(a, b))
     for a, b in [(sx,sy),(sx,sz),(sy,sz)]:
         parts.append(xcorr(a, b))
-    # L. Zero-crossing and peak rate (2)
     cj = mag_jerk - mag_jerk.mean(1, keepdims=True)
     parts.append((np.diff(np.sign(cj), axis=1) != 0).sum(1) / T)
     pr = np.zeros(N, dtype=np.float32)
     for n in range(N):
         pr[n] = len(find_peaks(mag_jerk[n], height=mag_jerk[n].mean())[0]) / T
     parts.append(pr)
-    # M. Trend features (18)
     for ch in [mx, my, mz, sx, sy, sz]:
         parts += trend3(ch)
-    # N. Extra stats for dominant channels — NEW (+28)
-    # sx, sy, sz and mag_std account for 48.5% of run23's importance.
-    # 7 extra stats each gives the model better distributional resolution.
+    # extra stats for dominant channels (+28)
     for sig in [sx, sy, sz, mag_std]:
         parts += stats_extra7(sig)
 
@@ -256,16 +213,14 @@ X_tr_orig_feat = extract(X_tr)
 X_tr_aug_feat  = extract(X_tr_aug)
 X_te_feat      = extract(X_te)
 assert X_tr_orig_feat.shape[1] == 410, f"Expected 410 features, got {X_tr_orig_feat.shape[1]}"
-print(f"  Features: {X_tr_orig_feat.shape[1]}  (373 - 9 mag_mean + 28 extra_stats + 18 trend)")
+print(f"  Features: {X_tr_orig_feat.shape[1]}")
 
 scaler   = StandardScaler()
 X_tr_sc  = scaler.fit_transform(X_tr_aug_feat)
 X_te_sc  = scaler.transform(X_te_feat)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE NAMES (for importance output)
-# ──────────────────────────────────────────────────────────────────────────────
+# feature names
 _S9    = ['mean','std','min','max','range','median','iqr','skew','kurt']
 _EXTRA = ['energy','mad','rms','q05','q10','q90','q95']
 FEATURE_NAMES = []
@@ -322,12 +277,8 @@ FEATURE_GROUPS = [
 ]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# LOO-CV
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("LOO-CV — collecting probabilities for threshold optimization")
-print("="*60)
+# cv
+print("\ncv (5 folds x 9 LGB)...")
 
 unique_users = np.unique(users)
 user_folds   = {u: i % 5 for i, u in enumerate(unique_users)}
@@ -379,16 +330,14 @@ per_class_f1 = f1_score(y_tr, loo_preds, average=None)
 print(f"\nBaseline CV macro F1: {baseline_f1:.4f}")
 print("Per-class F1:", [f"{f:.3f}" for f in per_class_f1])
 
-# ── Confusion matrix (text) ───────────────────────────────────────────────────
 cm = confusion_matrix(y_tr, loo_preds, normalize='true')
 print("\nCV Confusion Matrix (row=true, col=predicted, normalized):")
 print(f"  {'':16}" + "".join(f"    C{c}" for c in range(6)))
 for i in range(6):
     row = "".join(f"  {cm[i,j]:.2f}" for j in range(6))
-    flag = "  ← C2 bottleneck" if i == 2 else ""
+    flag = "  <- C2 bottleneck" if i == 2 else ""
     print(f"  C{i} {CLASS_NAMES[i]:<14}{row}{flag}")
 
-# ── Confusion matrix (graph) ──────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(8, 6))
 sns.heatmap(cm, annot=True, fmt='.2f', cmap='Blues', ax=ax,
             xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES,
@@ -401,12 +350,8 @@ plt.close()
 print(f"  Saved: run24_confusion_matrix.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("THRESHOLD OPTIMIZATION")
-print("="*60)
+# threshold optimization
+print("\nthreshold optimization...")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -437,7 +382,6 @@ print(f"\nOptimal scales:  {np.round(optimal_scales, 3)}")
 print(f"CV F1 after opt: {opt_f1:.4f}  (was {baseline_f1:.4f}, +{opt_f1-baseline_f1:.4f})")
 print("Per-class F1:", [f"{f:.3f}" for f in opt_per_class])
 
-# ── Per-class F1 graph ────────────────────────────────────────────────────────
 fig, axes = plt.subplots(1, 2, figsize=(13, 4))
 colors = ['#d9534f' if i == 2 else '#5bc0de' for i in range(6)]
 x = np.arange(6)
@@ -460,12 +404,8 @@ plt.close()
 print(f"  Saved: run24_per_class_f1.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — 15 LGB + 9 XGB = 24 models
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FINAL TRAINING (15 LightGBM + 9 XGBoost = 24 models)")
-print("="*60)
+# final training — 15 LGB + 9 XGB
+print("\nfinal training (15 LGB + 9 XGB)...")
 
 sw_aug = compute_sample_weight('balanced', y_tr_aug)
 XGB_CONFIGS = [
@@ -511,12 +451,8 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FEATURE GROUP IMPORTANCE (LightGBM gain, avg over 15 models)")
-print("="*60)
+# feature group importance
+print("\nfeature group importance (LGB gain, avg 15 models):")
 
 n_features = X_tr_sc.shape[1]
 imp_matrix  = np.zeros((len(lgb_models), n_features))
@@ -533,7 +469,6 @@ for start, end, name in FEATURE_GROUPS:
     group_rows.append((name, end-start, g, g/total*100))
     print(f"  {name:<22} {end-start:>4}   {g:>12.1f}   {g/total*100:>7.1f}%")
 
-# ── Feature importance graph ──────────────────────────────────────────────────
 group_rows_sorted = sorted(group_rows, key=lambda x: x[2], reverse=True)
 fig, ax = plt.subplots(figsize=(10, 6))
 names_g = [r[0] for r in group_rows_sorted]
@@ -552,7 +487,6 @@ plt.savefig(OUT_DIR / 'run24_feature_importance.png', dpi=150, bbox_inches='tigh
 plt.close()
 print(f"  Saved: run24_feature_importance.png")
 
-# Top-20 individual features
 print(f"\n  Top 20 individual features:")
 print(f"  {'Rank':>4}  {'Feature':<32}  {'Importance':>10}  {'%':>6}")
 print(f"  {'-'*58}")
@@ -560,7 +494,6 @@ feat_series = pd.Series(avg_imp, index=FEATURE_NAMES).sort_values(ascending=Fals
 for rank, (fname, fimp) in enumerate(feat_series.head(20).items(), 1):
     print(f"  {rank:>4}  {fname:<32}  {fimp:>10.1f}  {fimp/total*100:>5.2f}%")
 
-# Extra stats breakdown
 print(f"\n  extra_stats_gyro breakdown:")
 extra_names = [n for n in FEATURE_NAMES if any(
     n.endswith(s) for s in _EXTRA) and any(
@@ -569,7 +502,6 @@ extra_series = feat_series[extra_names].sort_values(ascending=False)
 for fname, fimp in extra_series.head(14).items():
     print(f"    {fname:<28}  {fimp:>10.1f}  {fimp/total*100:>5.2f}%")
 
-# Save full per-feature importance CSV
 df_full = feat_series.reset_index()
 df_full.columns = ["feature", "importance"]
 df_full["pct"] = df_full["importance"] / total * 100
@@ -577,23 +509,12 @@ df_full.to_csv(OUT_DIR / "per_feature_importance_run24.csv", index=False)
 print(f"\n  Full importance saved: per_feature_importance_run24.csv")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run24.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train rate):")
-for c in range(6):
-    cnt = (preds == c).sum()
-    exp = int(len(preds) * counts[c] / len(y_tr))
-    print(f"  Class {c}: {cnt:5d}  (expected ~{exp})")
-
-print(f"\nOptimal scales:          {np.round(optimal_scales, 3)}")
-print(f"CV F1 (threshold-opt):   {opt_f1:.4f}")
-print(f"CV F1 (baseline argmax): {baseline_f1:.4f}")
-print(f"Baseline run23:          0.7792")
-print(f"Baseline run18:          0.7738")
+print(f"submission saved to {out_path}")
+print(f"CV F1: {baseline_f1:.4f}  -> after threshold opt: {opt_f1:.4f}")
+print(f"optimal scales: {np.round(optimal_scales, 3)}")

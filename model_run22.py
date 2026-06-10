@@ -1,21 +1,4 @@
-"""
-model_run22.py — run18 + jerk asymmetry features (one change from run18)
-
-run18 (0.7738): 373+45 features, 15 LGB + 9 XGB
-run22: adds 6 jerk asymmetry features → 379+45 = 424 features
-
-New features: for each of jx, jy, jz:
-  - mean of positive values  (average upward jerk per axis)
-  - mean of negative values  (average downward jerk per axis)
-
-Motivation: walking downstairs has a negative vertical jerk bias;
-upstairs has a positive bias. min/max/skewness already exist but
-the separated positive/negative means are a more direct signal.
-Phone orientation varies per user so all 3 axes are included —
-the model learns which axis is vertical for each user pattern.
-
-Everything else is identical to run18.
-"""
+# run22: 379+45 features (run18 + 6 jerk asymmetry), 15 LGB + 9 XGB, augmentation, per-user norm
 
 import numpy as np
 import pandas as pd
@@ -40,9 +23,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING
-# ──────────────────────────────────────────────────────────────────────────────
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -58,9 +39,7 @@ def find_npz(name):
         return hits[0]
     raise FileNotFoundError(f"Cannot find {name} in /kaggle/input/")
 
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
+print("loading data...")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -83,9 +62,7 @@ for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PER-USER NORMALIZATION
-# ──────────────────────────────────────────────────────────────────────────────
+# per-user normalization
 def user_normalise(X, user_ids):
     X_out = X.copy()
     for uid in np.unique(user_ids):
@@ -101,9 +78,7 @@ X_tr = user_normalise(X_tr_raw, users)
 X_te = user_normalise(X_te_raw, te_users)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA AUGMENTATION
-# ──────────────────────────────────────────────────────────────────────────────
+# data augmentation
 AUG_CONFIG    = {2: 5, 4: 5, 5: 2, 3: 1}
 AUG_NOISE_STD = 0.05
 
@@ -128,14 +103,12 @@ X_tr_aug, y_tr_aug, users_aug = augment_minority(
     X_tr, y_tr, users, AUG_CONFIG, AUG_NOISE_STD, SEED
 )
 aug_unique, aug_counts = np.unique(y_tr_aug, return_counts=True)
-print(f"  {len(y_tr)} → {len(y_tr_aug)} samples")
+print(f"  {len(y_tr)} -> {len(y_tr_aug)} samples")
 for u, c in zip(aug_unique, aug_counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr_aug)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# feature helpers
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s, 1),
@@ -175,16 +148,13 @@ def xcorr(a, b):
     return (ca*cb).mean(1) / (ca.std(1)*cb.std(1)+1e-10)
 
 def jerk_asymmetry(ch):
-    """Mean positive jerk and mean negative jerk for one axis.
-    Captures directional bias: downstairs → negative axis bias."""
+    # mean positive and negative jerk per axis
     pos_mean = np.where(ch > 0, ch, 0).mean(1)
     neg_mean = np.where(ch < 0, ch, 0).mean(1)
     return [pos_mean, neg_mean]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION — run18's 373 features + 6 jerk asymmetry features = 379
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction — 379 features (373 base + 6 jerk asymmetry)
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -200,20 +170,13 @@ def extract(X):
 
     parts = []
 
-    # A. Std channels (27)
     for ch in [sx, sy, sz]:
         parts += stats9(ch)
-    # B. Std magnitude (9)
     parts += stats9(mag_std)
-    # C. Mean magnitude (9)
     parts += stats9(mag_mean)
-    # D. Jerk per axis (27)
     for ch in [jx, jy, jz]:
         parts += stats9(ch)
-    # E. Jerk magnitude (9)
     parts += stats9(mag_jerk)
-
-    # F. Segments (120)
     for sig in [mag_std, mag_jerk]:
         for ns in [10, 20]:
             parts += seg(sig, ns)
@@ -221,36 +184,24 @@ def extract(X):
         parts += seg(ch, 10)
     for ch in [jx, jy, jz]:
         parts += seg(ch, 10)
-
-    # G. Autocorrelation (19)
     for lag in [1, 2, 5, 10, 20, 30, 60]:
         parts.append(ac(mag_jerk, lag))
     for ch in [sx, sy, sz]:
         for lag in [1, 5, 10, 30]:
             parts.append(ac(ch, lag))
-
-    # H. Spectral (25)
     for sig in [mag_jerk, mag_std, sx, sy, sz]:
         parts.append(spectral5(sig))
-
-    # I. Cross-correlations (6)
     for a, b in [(jx, jy), (jx, jz), (jy, jz)]:
         parts.append(xcorr(a, b))
     for a, b in [(sx, sy), (sx, sz), (sy, sz)]:
         parts.append(xcorr(a, b))
-
-    # J. Zero-crossing and peak rate (2)
     cj = mag_jerk - mag_jerk.mean(1, keepdims=True)
     parts.append((np.diff(np.sign(cj), axis=1) != 0).sum(1) / T)
     pr = np.zeros(N, dtype=np.float32)
     for n in range(N):
         pr[n] = len(find_peaks(mag_jerk[n], height=mag_jerk[n].mean())[0]) / T
     parts.append(pr)
-
-    # K. Jerk asymmetry — NEW (6): pos/neg mean for each of jx, jy, jz
-    #    Motivation: downstairs walking has a negative bias on the vertical axis;
-    #    upstairs has positive. min/max/skew already exist but separated means
-    #    are a more direct signal for the model to learn which axis is vertical.
+    # jerk asymmetry (+6)
     for ch in [jx, jy, jz]:
         parts += jerk_asymmetry(ch)
 
@@ -260,11 +211,7 @@ def extract(X):
     ]).astype(np.float32)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# USER-CONTEXTUAL FEATURES — unchanged from run18
-# N_CTX=45 covers first 45 features (std_channels + mag_std + mag_mean)
-# which are unaffected by the new features appended at the end.
-# ──────────────────────────────────────────────────────────────────────────────
+# user-contextual features (same as run18, N_CTX=45)
 N_CTX = 45
 
 def add_user_context(X_feat, user_ids, ref_feat=None, ref_user_ids=None):
@@ -290,7 +237,7 @@ print("\nExtracting features...")
 X_tr_orig_feat = extract(X_tr)
 X_tr_aug_feat  = extract(X_tr_aug)
 X_te_feat      = extract(X_te)
-print(f"  Base features: {X_tr_orig_feat.shape[1]}  (373 original + 6 jerk asymmetry)")
+print(f"  Base features: {X_tr_orig_feat.shape[1]}")
 
 X_tr_aug_ctx = add_user_context(
     X_tr_aug_feat, users_aug,
@@ -304,12 +251,8 @@ X_tr_sc  = scaler.fit_transform(X_tr_aug_ctx)
 X_te_sc  = scaler.transform(X_te_ctx)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# LOO-CV — identical to run18
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("LOO-CV — collecting probabilities for threshold optimization")
-print("="*60)
+# cv
+print("\ncv (5 folds x 9 LGB)...")
 
 unique_users = np.unique(users)
 user_folds   = {u: i % 5 for i, u in enumerate(unique_users)}
@@ -369,12 +312,8 @@ print(f"\nBaseline CV macro F1: {baseline_f1:.4f}")
 print("Per-class F1:", [f"{f:.3f}" for f in per_class_f1])
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION — identical to run18
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("THRESHOLD OPTIMIZATION")
-print("="*60)
+# threshold optimization
+print("\nthreshold optimization...")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -406,12 +345,8 @@ print(f"CV F1 after opt: {opt_f1:.4f}  (was {baseline_f1:.4f}, +{opt_f1-baseline
 print("Per-class F1:", [f"{f:.3f}" for f in opt_per_class])
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — 15 LightGBM + 9 XGBoost = 24 models (same as run18)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FINAL TRAINING (15 LightGBM + 9 XGBoost = 24 models)")
-print("="*60)
+# final training — 15 LGB + 9 XGB
+print("\nfinal training (15 LGB + 9 XGB)...")
 
 sw_aug = compute_sample_weight('balanced', y_tr_aug)
 
@@ -444,7 +379,7 @@ FEATURE_GROUPS = [
 ]
 
 final_probas = []
-lgb_models   = []   # collected for feature importance
+lgb_models   = []
 
 for seed in range(5):
     for cfg in CONFIGS:
@@ -484,20 +419,14 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run22.csv"
 sub.to_csv(out_path, index=False)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE (LightGBM gain, averaged over 15 models)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FEATURE GROUP IMPORTANCE (LightGBM gain, avg over 15 models)")
-print("="*60)
+# feature group importance
+print("\nfeature group importance (LGB gain, avg 15 models):")
 
 n_features = X_tr_sc.shape[1]
 imp_matrix = np.zeros((len(lgb_models), n_features))
@@ -520,14 +449,6 @@ imp_path = OUT_DIR / "feature_group_importance_run22.csv"
 df_imp.to_csv(imp_path, index=False)
 print(f"\n  Saved: {imp_path}")
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train rate):")
-for c in range(6):
-    cnt = (preds == c).sum()
-    exp = int(len(preds) * counts[c] / len(y_tr))
-    print(f"  Class {c}: {cnt:5d}  (expected ~{exp})")
-
-print(f"\nOptimal scales:          {np.round(optimal_scales, 3)}")
-print(f"CV F1 (threshold-opt):   {opt_f1:.4f}")
-print(f"CV F1 (baseline argmax): {baseline_f1:.4f}")
-print(f"Baseline run18:          0.7738")
+print(f"submission saved to {out_path}")
+print(f"CV F1: {baseline_f1:.4f}  -> after threshold opt: {opt_f1:.4f}")
+print(f"optimal scales: {np.round(optimal_scales, 3)}")

@@ -1,40 +1,4 @@
-"""
-model_run29.py — 750 features (run28), run27 regularisation, RF in ensemble
-
-Diagnosis of run28 (Kaggle 0.7785 < run27's 0.7895):
-  The stronger regularisation (min_child_samples=40, reg_lambda=2.0) caused the
-  model to underfit. Best iterations were only [210, 186, 161, 130, 172] — early
-  stopping triggered at ~172 out of 2000, meaning the model stopped long before
-  it reached optimal capacity. run27 almost certainly ran 400–600 iterations.
-  The result: run28 lost ground on the dominant easy classes (C0/C1) even though
-  it improved C2 walk_down from 6% → 20% recall (the new features DID help).
-
-Fix (single change vs run28):
-  min_child_samples: 40 → 20  (run27 value)
-  reg_lambda:         2.0 → 1.0  (run27 value)
-  All 750 features kept — tilt/covcorr/mean_xyz_fft helped C2 and should be kept.
-  RF stays in ensemble — it has uncorrelated errors with LGB/XGB.
-
-Expected outcome:
-  C2 improvement from run28's new features (+14pp recall)
-  PLUS run27-level performance on C0/C1/C3/C4/C5
-  → net positive vs both run27 and run28
-
-Feature layout (750, identical to run28):
-  0– 77: mean_xyz axis stat+diff        (78)
-  78–155: std_xyz  axis stat+diff        (78)
- 156–207: acc_mag+std_mag stat+diff      (52)
- 208–363: cross-magnitudes stat+diff    (156)
- 364–415: sum_features stat+diff         (52)
- 416–465: FFT+peak 5 channels            (50)
- 466–715: 10-window 5 channels          (250)
- 716–721: tilt angle                      (6)
- 722–727: axis covariance/correlation     (6)
- 728–745: mean_xyz FFT                   (18)
- 746–749: step rhythm regularity          (4)
-
-Paths: auto-detects Kaggle vs laptop (same as run26/27/28).
-"""
+# run29: 750 features, 5 LGB + 2 XGB + 1 RF, lr=0.03, min_child_samples=20, reg_lambda=1.0 (restored from run28)
 
 import numpy as np
 import pandas as pd
@@ -67,9 +31,8 @@ print(f"Output dir: {OUT_DIR}")
 CLASS_NAMES = ["sit/stand", "walk_flat", "walk_down", "walk_up", "running", "other"]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING
-# ──────────────────────────────────────────────────────────────────────────────
+
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -85,9 +48,7 @@ def find_npz(name):
     if local.exists(): return str(local)
     raise FileNotFoundError(f"Cannot find {name}")
 
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
+print("loading data...")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -109,9 +70,8 @@ for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS (identical to run28)
-# ──────────────────────────────────────────────────────────────────────────────
+
+# feature helpers
 def _safe_skew_vec(ch):
     return np.array([skew(r) if np.std(r) >= 1e-12 else 0.0 for r in ch], dtype=np.float32)
 
@@ -227,9 +187,8 @@ def step_rhythm_features(std_mag):
     return out, names
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION — 750 features (identical to run28)
-# ──────────────────────────────────────────────────────────────────────────────
+
+# feature extraction (750 features)
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -295,7 +254,7 @@ print("\nExtracting features...")
 X_tr_feat, feat_names = extract(X_tr)
 X_te_feat, _          = extract(X_te)
 assert X_tr_feat.shape[1] == 750, f"Expected 750, got {X_tr_feat.shape[1]}"
-print(f"  Features: {X_tr_feat.shape[1]}  (identical to run28)")
+print(f"  Features: {X_tr_feat.shape[1]}")
 
 def clean(F_tr, F_te):
     F_tr = np.where(np.isfinite(F_tr), F_tr, np.nan)
@@ -308,16 +267,9 @@ def clean(F_tr, F_te):
 X_tr_feat, X_te_feat = clean(X_tr_feat, X_te_feat)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GROUPKFOLD CV
-# KEY FIX vs run28: min_child_samples 40→20, reg_lambda 2.0→1.0
-# run28's best_iters [210,186,161,130,172] showed severe underfitting (early stop
-# at ~172/2000). These values match run27 (notebook-exact) where early stopping
-# had room to find a higher-capacity optimum.
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("GROUPKFOLD CV  (fix: min_child_samples=20, reg_lambda=1.0 restored)")
-print("=" * 60)
+
+# groupkfold cv
+print("\ngroupkfold cv...")
 
 gkf        = GroupKFold(n_splits=5)
 loo_probas = np.zeros((len(y_tr), 6), dtype=np.float64)
@@ -335,9 +287,9 @@ for fold, (tr_idx, va_idx) in enumerate(gkf.split(X_tr_feat, y_tr, groups=users)
         objective='multiclass', num_class=6,
         n_estimators=2000, learning_rate=0.03,
         num_leaves=31, max_depth=-1,
-        min_child_samples=20,   # restored: run28's 40 caused underfitting
+        min_child_samples=20,
         subsample=0.85, colsample_bytree=0.85,
-        reg_alpha=0.1, reg_lambda=1.0,  # restored: run28's 2.0 caused underfitting
+        reg_alpha=0.1, reg_lambda=1.0,
         random_state=SEED + fold, n_jobs=-1, verbose=-1,
     )
     m.fit(
@@ -361,28 +313,26 @@ for fold, (tr_idx, va_idx) in enumerate(gkf.split(X_tr_feat, y_tr, groups=users)
           f"Macro F1={fold_f1:.4f}  Acc={accuracy_score(y_f_va, va_proba.argmax(1)):.4f}")
 
 avg_best_iter = int(np.mean(best_iters) * 1.10)
-print(f"\nBest iters per fold: {best_iters}  →  final n_estimators = {avg_best_iter}")
-print(f"  (run28 was [210,186,161,130,172] avg=172 — underfitting. Expect higher here.)")
+print(f"\nBest iters per fold: {best_iters}  ->  final n_estimators = {avg_best_iter}")
 
 loo_preds    = loo_probas.argmax(1)
 baseline_f1  = f1_score(y_tr, loo_preds, average='macro')
 per_class_f1 = f1_score(y_tr, loo_preds, average=None)
-print(f"\nOOF macro F1 : {baseline_f1:.4f}  (run28: 0.7248, run27: ~0.730, target: >0.730)")
+print(f"\nOOF macro F1 : {baseline_f1:.4f}")
 print(f"Mean fold F1 : {np.mean(fold_f1s):.4f} ± {np.std(fold_f1s):.4f}")
 print("Per-class F1 :", [f"{f:.3f}" for f in per_class_f1])
-print(f"  C2 walk_down: {per_class_f1[2]:.3f}  (run28: 0.233, run26: 0.131 — track C2 progress)")
+print(f"  C2 walk_down: {per_class_f1[2]:.3f}")
 print("\n" + classification_report(y_tr, loo_preds, target_names=CLASS_NAMES, digits=4))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CONFUSION MATRIX
-# ──────────────────────────────────────────────────────────────────────────────
+
+# confusion matrix
 cm = confusion_matrix(y_tr, loo_preds, normalize='true')
 print("CV Confusion Matrix (row=true, col=predicted):")
 print(f"  {'':16}" + "".join(f"    C{c}" for c in range(6)))
 for i in range(6):
     row  = "".join(f"  {cm[i,j]:.2f}" for j in range(6))
-    flag = "  ← C2 bottleneck (run28: 0.20, run26: 0.06)" if i == 2 else ""
+    flag = "  <- C2 bottleneck" if i == 2 else ""
     print(f"  C{i} {CLASS_NAMES[i]:<14}{row}{flag}")
 
 fig, ax = plt.subplots(figsize=(8, 6))
@@ -397,12 +347,9 @@ plt.close()
 print("  Saved: run29_confusion_matrix.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# COVARIANCE & CORRELATION MATRICES
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("OOF PROBABILITY COVARIANCE & CORRELATION MATRICES")
-print("=" * 60)
+
+# oof probability matrices
+print("\nOOF probability matrices...")
 
 cov_mat  = np.cov(loo_probas.T)
 std_diag = np.sqrt(np.diag(cov_mat))
@@ -441,8 +388,8 @@ print("\nSoft confusion (mean predicted probability per true class):")
 print(f"  {'':14}" + "".join(f"  {n:>10}" for n in CLASS_NAMES))
 for i in range(6):
     print(f"  {CLASS_NAMES[i]:<14}" + "".join(f"  {soft_cm[i,j]:>10.4f}" for j in range(6)))
-print(f"\n  C2→C1 confusion: {soft_cm[2,1]:.4f}  (run28: 0.4666, target: <0.40)")
-print(f"  C2 self-proba:   {soft_cm[2,2]:.4f}  (run28: 0.2214, target: >0.25)")
+print(f"\n  C2->C1 confusion: {soft_cm[2,1]:.4f}")
+print(f"  C2 self-proba:    {soft_cm[2,2]:.4f}")
 
 fig, ax = plt.subplots(figsize=(8, 6))
 sns.heatmap(soft_cm, annot=True, fmt='.3f', cmap='Blues', ax=ax,
@@ -456,12 +403,9 @@ plt.close()
 print("  Saved: run29_soft_confusion.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("THRESHOLD OPTIMIZATION")
-print("=" * 60)
+
+# threshold optimization
+print("\nthreshold optimization...")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -509,12 +453,9 @@ plt.close()
 print("  Saved: run29_per_class_f1.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — 5 LGB + 2 XGB + 1 RF = 8 models
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print(f"FINAL TRAINING (5 LGB @ {avg_best_iter} iters + 2 XGB + 1 RF = 8 models)")
-print("=" * 60)
+
+# final training (5 LGB + 2 XGB + 1 RF)
+print(f"\nfinal training (8 models, n_estimators={avg_best_iter})...")
 
 sw_all       = compute_sample_weight('balanced', y_tr)
 final_probas = []
@@ -532,7 +473,7 @@ for seed in range(5):
     m.fit(X_tr_feat, y_tr, sample_weight=sw_all)
     final_probas.append(m.predict_proba(X_te_feat))
     lgb_models.append(m)
-print(f"  LightGBM: {len(lgb_models)} models  (n_estimators={avg_best_iter})")
+print(f"  LightGBM: {len(lgb_models)} models")
 
 xgb_start = len(final_probas)
 for seed in range(2):
@@ -561,9 +502,8 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE
-# ──────────────────────────────────────────────────────────────────────────────
+
+# feature group importance
 FEATURE_GROUPS = [
     (  0,  78, "mean_xyz_axis_stat+diff"),
     ( 78, 156, "std_xyz_axis_stat+diff"),
@@ -578,9 +518,7 @@ FEATURE_GROUPS = [
     (746, 750, "step_rhythm"),
 ]
 
-print("\n" + "=" * 60)
-print("FEATURE GROUP IMPORTANCE (LightGBM gain, avg over 5 models)")
-print("=" * 60)
+print("\nfeature group importance...")
 imp_matrix = np.zeros((len(lgb_models), X_tr_feat.shape[1]))
 for i, m in enumerate(lgb_models):
     imp_matrix[i] = m.booster_.feature_importance(importance_type='gain')
@@ -606,7 +544,7 @@ for start, end, name in FEATURE_GROUPS:
 
 new_names = {"tilt_angle","axis_cov_corr","mean_xyz_fft","step_rhythm"}
 new_total = sum(r[3] for r in group_rows if r[0] in new_names)
-print(f"\n  New features: {new_total:.1f}% gain  (run28: 3.1%)")
+print(f"\n  New features: {new_total:.1f}% gain")
 
 fig, axes = plt.subplots(1, 2, figsize=(16, 5))
 gr_s = sorted(group_rows, key=lambda x: x[2], reverse=True)
@@ -642,30 +580,19 @@ for rank, idx in enumerate(top20, 1):
     print(f"  {rank:2d}. {feat_names[idx]:<50}  gain={avg_imp[idx]:.1f}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run29.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train rate):")
+print(f"submission saved to {out_path}")
+print("\nPrediction distribution:")
 for c in range(6):
     cnt = (preds == c).sum()
     exp = int(len(preds) * counts[c] / len(y_tr))
     print(f"  Class {c} {CLASS_NAMES[c]:<12}: {cnt:5d}  (expected ~{exp}, delta {cnt-exp:+d})")
 
-print(f"\nOptimal scales:          {np.round(optimal_scales, 3)}")
-print(f"OOF F1 (baseline):       {baseline_f1:.4f}")
-print(f"OOF F1 (threshold-opt):  {opt_f1:.4f}")
-print(f"")
-print(f"Run comparison:")
-print(f"  run26: 0.6981 OOF  0.7703 Kaggle  (412 feat, num_leaves=63, fixed 500 trees)")
-print(f"  run27: ~0.730 OOF  0.7895 Kaggle  (716 feat, num_leaves=31, early stop)")
-print(f"  run28: 0.7248 OOF  0.7785 Kaggle  (750 feat, reg too strong → underfitting)")
-print(f"  run29: {baseline_f1:.4f} OOF  ?.???? Kaggle  (750 feat, reg restored)")
-print(f"")
-print(f"  C2 walk_down diagonal:  run26=0.06  run28=0.20  run29={cm[2,2]:.2f}")
-print(f"  C2→C1 confusion:        run26=0.68  run28=0.51  run29={cm[2,1]:.2f}")
+print(f"\nOOF F1 (baseline): {baseline_f1:.4f}  OOF F1 (opt): {opt_f1:.4f}")
+print(f"C2 walk_down diagonal: {cm[2,2]:.2f}  C2->C1 confusion: {soft_cm[2,1]:.4f}")

@@ -1,20 +1,4 @@
-"""
-model_run17.py — Threshold-optimized ensemble
-
-Key improvements over run07 (0.7707):
-1. Extended feature set (+55 features targeting Class 2 vs 1 confusion):
-   - Temporal trend (linear slope) of magnitude signals
-   - First/second half comparison (stair descent has directional change)
-   - 5-segment breakdown of mag_jerk and mag_mean
-   - Second-order jerk (jerk-of-jerk) statistics
-   - Additional autocorrelation lags and energy features
-2. Soft threshold optimization via LOO-CV probabilities to maximize macro F1
-   (run07 uses argmax which maximizes accuracy, not F1)
-3. Larger ensemble: 10 seeds × 3 LGB configs = 30 models
-
-Root cause of Class 2 failure: walking downstairs has a consistent downward
-trend in magnitude that flat walking lacks. Temporal trend features capture this.
-"""
+# run17: 428 features (373 + 55 trend/half/seg/jerk2/energy), 30 LGB, threshold opt
 
 import numpy as np
 import pandas as pd
@@ -37,9 +21,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING
-# ──────────────────────────────────────────────────────────────────────────────
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -55,15 +37,9 @@ def find_npz(name):
         return hits[0]
     raise FileNotFoundError(f"Cannot find {name} in /kaggle/input/")
 
-print("=" * 60)
-print("LOADING NPZ DATA")
-print("=" * 60)
-
 try:
     train_path = find_npz("train_data.npz")
     test_path  = find_npz("test_data.npz")
-    print(f"Train data: {train_path}")
-    print(f"Test data:  {test_path}")
     tr = np.load(train_path, allow_pickle=True)
     te = np.load(test_path,  allow_pickle=True)
 except Exception as e:
@@ -79,17 +55,12 @@ te_ids   = te["file_ids"]
 te_users = te["users"]
 
 unique, counts = np.unique(y_tr, return_counts=True)
-print(f"\nTrain shape: {X_tr_raw.shape}")
-print(f"Test shape:  {X_te_raw.shape}")
-print(f"Training users: {len(np.unique(users))}")
-print("Class distribution:")
+print(f"Train: {X_tr_raw.shape}  Test: {X_te_raw.shape}")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PER-USER NORMALIZATION (same as run07)
-# ──────────────────────────────────────────────────────────────────────────────
+# per-user normalization
 def user_normalise(X, user_ids):
     X_out = X.copy()
     for uid in np.unique(user_ids):
@@ -105,9 +76,7 @@ X_tr = user_normalise(X_tr_raw, users)
 X_te = user_normalise(X_te_raw, te_users)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# feature helpers
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s, 1),
@@ -149,7 +118,7 @@ def xcorr(a, b):
     return (ca*cb).mean(1) / (ca.std(1)*cb.std(1)+1e-10)
 
 def linear_slope(s):
-    """Linear regression slope of signal over time — detects trends like descent."""
+    # linear regression slope over time
     N, T = s.shape
     t = np.arange(T, dtype=np.float32)
     t_c = t - t.mean()
@@ -157,9 +126,7 @@ def linear_slope(s):
     return (s * t_c).sum(1) / t_var
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION (run07's 373 features + 55 new = 428 total)
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction — 428 features (373 base + 55 new)
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -175,7 +142,7 @@ def extract(X):
 
     parts = []
 
-    # ── run07's proven 373 features (exact same order) ────────────────────────
+    # run07's 373 features
     for ch in [sx, sy, sz]:
         parts += stats9(ch)
     parts += stats9(mag_std)
@@ -214,8 +181,7 @@ def extract(X):
         pr[n] = len(find_peaks(mag_jerk[n], height=mag_jerk[n].mean())[0]) / T
     parts.append(pr)
 
-    # ── NEW: Temporal trend features (6) ─────────────────────────────────────
-    # Walking downstairs has a distinct downward slope in magnitude over time.
+    # temporal trend features (+6)
     parts.append(linear_slope(mag_mean))
     parts.append(linear_slope(mag_jerk))
     parts.append(linear_slope(mag_std))
@@ -223,37 +189,32 @@ def extract(X):
     parts.append(linear_slope(sy))
     parts.append(linear_slope(sz))
 
-    # ── NEW: First/second half comparison (6) ─────────────────────────────────
-    # Stair descent has directional change; flat walking is more stationary.
+    # first/second half comparison (+6)
     for sig in [mag_mean, mag_jerk, mag_std]:
         h = sig.shape[1] // 2
         first, second = sig[:, :h], sig[:, h:]
         parts.append(second.mean(1) - first.mean(1))
         parts.append(second.std(1) / (first.std(1) + 1e-8))
 
-    # ── NEW: 5-segment breakdown (20) ─────────────────────────────────────────
-    # Finer temporal resolution than run07's 10/20 segments.
+    # 5-segment breakdown (+20)
     parts += seg(mag_jerk, 5)
     parts += seg(mag_mean, 5)
 
-    # ── NEW: Second-order jerk stats9 (9) ────────────────────────────────────
-    # Captures the rate of change of acceleration change.
+    # second-order jerk stats (+9)
     jjx = np.diff(jx, axis=1)
     jjy = np.diff(jy, axis=1)
     jjz = np.diff(jz, axis=1)
     mag_jerk2 = np.sqrt(jjx**2 + jjy**2 + jjz**2)
     parts += stats9(mag_jerk2)
 
-    # ── NEW: Additional autocorrelation lags for mag_jerk (5) ────────────────
+    # extra autocorrelation lags (+5)
     for lag in [3, 7, 15, 45, 90]:
         parts.append(ac(mag_jerk, lag))
 
-    # ── NEW: Cross-correlation mag_mean vs mag_jerk (1) ──────────────────────
-    # mag_mean is T=300, mag_jerk is T=299 (diff reduces by 1), trim to match.
+    # cross-correlation mag_mean vs mag_jerk (+1; trim mag_mean to match)
     parts.append(xcorr(mag_mean[:, :-1], mag_jerk))
 
-    # ── NEW: Temporal energy distribution (8) ────────────────────────────────
-    # Energy in start/mid/end of window reveals directional patterns.
+    # temporal energy: start/mid/end (+8)
     s20 = T // 5
     for sig in [mag_jerk, mag_std]:
         e_start = (sig[:, :s20]**2).mean(1)
@@ -279,12 +240,8 @@ X_tr_sc = scaler.fit_transform(X_tr_feat)
 X_te_sc = scaler.transform(X_te_feat)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# LOO-CV WITH PROBABILITY COLLECTION
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("LOO-CV — collecting probabilities for threshold optimization")
-print("="*60)
+# 5-fold LOO-CV — collect probabilities for threshold optimization
+print("\nLOO-CV — threshold optimization")
 
 unique_users = np.unique(users)
 user_folds = {u: i % 5 for i, u in enumerate(unique_users)}
@@ -304,7 +261,7 @@ for fold in range(5):
     print(f"\nFold {fold+1}/5  train={len(tr_idx)}  val={len(va_idx)}")
 
     fold_probas = []
-    for seed in [42, 7, 13]:   # 3 seeds in CV (fast but representative)
+    for seed in [42, 7, 13]:
         for cfg in CONFIGS:
             m = lgb.LGBMClassifier(
                 n_estimators=500,
@@ -329,14 +286,8 @@ per_class_f1 = f1_score(y_tr, loo_probas.argmax(1), average=None)
 print("Per-class F1:", [f"{f:.3f}" for f in per_class_f1])
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION
-# Finds per-class log-scale factors that maximize macro F1.
-# This is the key algorithmic difference vs run07's frequency-ratio boost.
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("THRESHOLD OPTIMIZATION")
-print("="*60)
+# threshold optimization (Nelder-Mead, 5 restarts)
+print("\nthreshold optimization")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -345,11 +296,9 @@ def neg_macro_f1(log_scales, proba, y_true):
     preds = scaled.argmax(axis=1)
     return -f1_score(y_true, preds, average='macro')
 
-print("Optimizing scales (Nelder-Mead)...")
 best_result = None
 best_f1 = -np.inf
 
-# Multiple restarts to avoid local minima
 for x0_seed in range(5):
     rng = np.random.RandomState(x0_seed * 17)
     x0 = rng.uniform(-0.5, 0.5, 6)
@@ -379,12 +328,8 @@ print("Per-class F1:", [f"{f:.3f}" for f in opt_per_class])
 print(f"Improvement: {opt_f1 - baseline_f1:+.4f}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — 10 seeds × 3 configs = 30 LightGBM models
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FINAL TRAINING (30 models)")
-print("="*60)
+# final training — 30 LGB (10 seeds x 3 configs)
+print("\nfinal training (30 models)")
 
 final_probas = []
 for seed in range(10):
@@ -403,27 +348,17 @@ for seed in range(10):
 
 avg_proba = np.mean(final_probas, axis=0)
 
-# Apply optimized scales to test predictions
 scaled_test = avg_proba * optimal_scales
 scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run17.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train):")
-for c in range(6):
-    cnt = (preds == c).sum()
-    exp = int(len(preds) * counts[c] / len(y_tr))
-    print(f"  Class {c}: {cnt:5d}  (train rate suggests ~{exp})")
-
-print(f"\nOptimal class scales: {np.round(optimal_scales, 3)}")
-print(f"CV macro F1 (threshold-optimized): {opt_f1:.4f}")
-print(f"Baseline CV macro F1 (argmax):     {baseline_f1:.4f}")
+print(f"submission saved to {out_path}")
+print(f"CV F1: {baseline_f1:.4f}  -> after threshold opt: {opt_f1:.4f}")
+print(f"optimal scales: {np.round(optimal_scales, 3)}")

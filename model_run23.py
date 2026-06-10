@@ -1,17 +1,4 @@
-"""
-model_run23.py — No normalization + trend features (two changes from run18)
-
-run18 (0.7738): per-user normalization, 373+45 features, 15 LGB + 9 XGB
-run23 changes:
-  1. NO per-user normalization — raw axis values keep gravity direction info.
-     Screening showed baseline CV 0.684 vs run18's 0.660 (+0.024).
-  2. +18 trend features (first_60_mean, last_60_mean, last-first per channel).
-     Screening showed +0.009 improvement over no-norm baseline (best of all tested).
-  3. NO user context — z-score features slightly hurt without normalization (-0.001).
-
-Total: 391 features (373 baseline + 18 trend).
-Pipeline: augmentation + 15 LGB + 9 XGB + threshold optimization (same as run18).
-"""
+# run23: 391 features (373 + 18 trend), no normalization, 15 LGB + 9 XGB, augmentation
 
 import numpy as np
 import pandas as pd
@@ -36,9 +23,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING — raw, no per-user normalization applied
-# ──────────────────────────────────────────────────────────────────────────────
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -52,9 +37,7 @@ def find_npz(name):
     if hits: return hits[0]
     raise FileNotFoundError(f"Cannot find {name} in /kaggle/input/")
 
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
+print("loading data...")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -71,20 +54,16 @@ X_te_raw = np.nan_to_num(te["X"].astype(np.float32), nan=0.0)
 te_ids   = te["file_ids"]
 te_users = te["users"]
 
-# Raw data used directly — no per-user normalization
 X_tr = X_tr_raw
 X_te = X_te_raw
 
 unique, counts = np.unique(y_tr, return_counts=True)
-print(f"Train: {X_tr.shape}  Test: {X_te.shape}")
-print(f"NOTE: no per-user normalization applied")
+print(f"Train: {X_tr.shape}  Test: {X_te.shape}  (no normalization)")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA AUGMENTATION — identical to run18
-# ──────────────────────────────────────────────────────────────────────────────
+# data augmentation (same as run18)
 AUG_CONFIG    = {2: 5, 4: 5, 5: 2, 3: 1}
 AUG_NOISE_STD = 0.05
 
@@ -109,14 +88,12 @@ X_tr_aug, y_tr_aug, users_aug = augment_minority(
     X_tr, y_tr, users, AUG_CONFIG, AUG_NOISE_STD, SEED
 )
 aug_unique, aug_counts = np.unique(y_tr_aug, return_counts=True)
-print(f"  {len(y_tr)} → {len(y_tr_aug)} samples")
+print(f"  {len(y_tr)} -> {len(y_tr_aug)} samples")
 for u, c in zip(aug_unique, aug_counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr_aug)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# feature helpers
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s, 1),
@@ -156,24 +133,19 @@ def xcorr(a, b):
     return (ca*cb).mean(1) / (ca.std(1)*cb.std(1)+1e-10)
 
 def trend3(s):
-    """first_60_mean, last_60_mean, last-first — captures within-window drift.
-    Without normalization, raw axis values encode gravity direction, making
-    the trend meaningful for distinguishing upstairs vs downstairs."""
+    # first_60_mean, last_60_mean, last-first
     first = s[:, :60].mean(1)
     last  = s[:, -60:].mean(1)
     return [first, last, last - first]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION — 373 baseline + 18 trend features = 391 total
-# No user context (screening showed it slightly hurts without normalization).
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction — 391 features (373 base + 18 trend)
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
     sx, sy, sz = X[:,:,3], X[:,:,4], X[:,:,5]
 
-    jx = np.diff(mx, axis=1)   # jerk naturally removes gravity (high-pass filter)
+    jx = np.diff(mx, axis=1)
     jy = np.diff(my, axis=1)
     jz = np.diff(mz, axis=1)
 
@@ -183,55 +155,34 @@ def extract(X):
 
     parts = []
 
-    # A. Std channels (27)
     for ch in [sx, sy, sz]:       parts += stats9(ch)
-    # B. Std magnitude (9)
     parts += stats9(mag_std)
-    # C. Mean magnitude (9)
     parts += stats9(mag_mean)
-    # D. Jerk per axis (27)
     for ch in [jx, jy, jz]:       parts += stats9(ch)
-    # E. Jerk magnitude (9)
     parts += stats9(mag_jerk)
-
-    # F. Segments (120)
     for sig in [mag_std, mag_jerk]:
         for ns in [10, 20]:
             parts += seg(sig, ns)
-    # G. Std channel segments (60)
     for ch in [sx, sy, sz]:       parts += seg(ch, 10)
-    # H. Jerk channel segments (60)
     for ch in [jx, jy, jz]:       parts += seg(ch, 10)
-
-    # I. Autocorrelation (19)
     for lag in [1, 2, 5, 10, 20, 30, 60]:
         parts.append(ac(mag_jerk, lag))
     for ch in [sx, sy, sz]:
         for lag in [1, 5, 10, 30]:
             parts.append(ac(ch, lag))
-
-    # J. Spectral (25)
     for sig in [mag_jerk, mag_std, sx, sy, sz]:
         parts.append(spectral5(sig))
-
-    # K. Cross-correlations (6)
     for a, b in [(jx,jy),(jx,jz),(jy,jz)]:
         parts.append(xcorr(a, b))
     for a, b in [(sx,sy),(sx,sz),(sy,sz)]:
         parts.append(xcorr(a, b))
-
-    # L. Zero-crossing and peak rate (2)
     cj = mag_jerk - mag_jerk.mean(1, keepdims=True)
     parts.append((np.diff(np.sign(cj), axis=1) != 0).sum(1) / T)
     pr = np.zeros(N, dtype=np.float32)
     for n in range(N):
         pr[n] = len(find_peaks(mag_jerk[n], height=mag_jerk[n].mean())[0]) / T
     parts.append(pr)
-
-    # M. Trend features — NEW (+18)
-    # first_60_mean, last_60_mean, last-first for each raw channel.
-    # Raw (unnormalized) channels contain gravity → trend captures direction of
-    # movement within the window (upstairs = positive, downstairs = negative).
+    # trend features (+18)
     for ch in [mx, my, mz, sx, sy, sz]:
         parts += trend3(ch)
 
@@ -245,19 +196,15 @@ print("\nExtracting features...")
 X_tr_orig_feat = extract(X_tr)
 X_tr_aug_feat  = extract(X_tr_aug)
 X_te_feat      = extract(X_te)
-print(f"  Features: {X_tr_orig_feat.shape[1]}  (373 baseline + 18 trend)")
+print(f"  Features: {X_tr_orig_feat.shape[1]}")
 
 scaler   = StandardScaler()
 X_tr_sc  = scaler.fit_transform(X_tr_aug_feat)
 X_te_sc  = scaler.transform(X_te_feat)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# LOO-CV — identical to run18 except no user context
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("LOO-CV — collecting probabilities for threshold optimization")
-print("="*60)
+# cv
+print("\ncv (5 folds x 9 LGB)...")
 
 unique_users = np.unique(users)
 user_folds   = {u: i % 5 for i, u in enumerate(unique_users)}
@@ -311,23 +258,18 @@ per_class_f1 = f1_score(y_tr, loo_preds, average=None)
 print(f"\nBaseline CV macro F1: {baseline_f1:.4f}")
 print("Per-class F1:", [f"{f:.3f}" for f in per_class_f1])
 
-# Confusion matrix — shows where each class is being misclassified
 CLASS_NAMES = ["sit/stand", "walk_flat", "walk_down", "walk_up", "running", "other"]
 cm = confusion_matrix(y_tr, loo_preds, normalize='true')
 print("\nCV Confusion Matrix (row=true, col=predicted, normalized):")
 print(f"  {'':14}" + "".join(f"  C{c}" for c in range(6)))
 for i in range(6):
     row = "".join(f"  {cm[i,j]:.2f}" for j in range(6))
-    flag = "  ← C2 bottleneck" if i == 2 else ""
+    flag = "  <- C2 bottleneck" if i == 2 else ""
     print(f"  C{i} {CLASS_NAMES[i]:<12}{row}{flag}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION — identical to run18
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("THRESHOLD OPTIMIZATION")
-print("="*60)
+# threshold optimization
+print("\nthreshold optimization...")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -359,12 +301,8 @@ print(f"CV F1 after opt: {opt_f1:.4f}  (was {baseline_f1:.4f}, +{opt_f1-baseline
 print("Per-class F1:", [f"{f:.3f}" for f in opt_per_class])
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — 15 LightGBM + 9 XGBoost = 24 models (same as run18)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FINAL TRAINING (15 LightGBM + 9 XGBoost = 24 models)")
-print("="*60)
+# final training — 15 LGB + 9 XGB
+print("\nfinal training (15 LGB + 9 XGB)...")
 
 sw_aug = compute_sample_weight('balanced', y_tr_aug)
 
@@ -377,43 +315,40 @@ XGB_CONFIGS = [
          subsample=0.9, colsample_bytree=0.6),
 ]
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE NAMES — descriptive label for each of the 391 features
-# Used for top-N individual importance output after final training.
-# ──────────────────────────────────────────────────────────────────────────────
+# feature names
 _STATS9 = ['mean','std','min','max','range','median','iqr','skew','kurt']
 FEATURE_NAMES = []
-for ch in ['sx','sy','sz']:                                   # std_channels 27
+for ch in ['sx','sy','sz']:
     for s in _STATS9: FEATURE_NAMES.append(f"{ch}_{s}")
-for s in _STATS9: FEATURE_NAMES.append(f"mag_std_{s}")       # mag_std 9
-for s in _STATS9: FEATURE_NAMES.append(f"mag_mean_{s}")      # mag_mean 9
-for ch in ['jx','jy','jz']:                                   # jerk_channels 27
+for s in _STATS9: FEATURE_NAMES.append(f"mag_std_{s}")
+for s in _STATS9: FEATURE_NAMES.append(f"mag_mean_{s}")
+for ch in ['jx','jy','jz']:
     for s in _STATS9: FEATURE_NAMES.append(f"{ch}_{s}")
-for s in _STATS9: FEATURE_NAMES.append(f"mag_jerk_{s}")      # mag_jerk 9
-for sig in ['mag_std','mag_jerk']:                            # seg_mag 120
+for s in _STATS9: FEATURE_NAMES.append(f"mag_jerk_{s}")
+for sig in ['mag_std','mag_jerk']:
     for ns in [10,20]:
         for i in range(ns):
             FEATURE_NAMES += [f"{sig}_seg{ns}_{i:02d}_mean",
                                f"{sig}_seg{ns}_{i:02d}_std"]
-for ch in ['sx','sy','sz']:                                   # seg_std_ch 60
+for ch in ['sx','sy','sz']:
     for i in range(10):
         FEATURE_NAMES += [f"{ch}_seg10_{i:02d}_mean", f"{ch}_seg10_{i:02d}_std"]
-for ch in ['jx','jy','jz']:                                   # seg_jerk_ch 60
+for ch in ['jx','jy','jz']:
     for i in range(10):
         FEATURE_NAMES += [f"{ch}_seg10_{i:02d}_mean", f"{ch}_seg10_{i:02d}_std"]
-for lag in [1,2,5,10,20,30,60]:                               # ac_jerk 7
+for lag in [1,2,5,10,20,30,60]:
     FEATURE_NAMES.append(f"ac_mag_jerk_lag{lag}")
-for ch in ['sx','sy','sz']:                                   # ac_std_ch 12
+for ch in ['sx','sy','sz']:
     for lag in [1,5,10,30]: FEATURE_NAMES.append(f"ac_{ch}_lag{lag}")
-for sig in ['mag_jerk','mag_std','sx','sy','sz']:              # spectral 25
+for sig in ['mag_jerk','mag_std','sx','sy','sz']:
     for f in ['dom_freq','entropy','low_pow','mid_pow','high_pow']:
         FEATURE_NAMES.append(f"spec_{sig}_{f}")
-for a,b in [('jx','jy'),('jx','jz'),('jy','jz'),             # crosscorr 6
+for a,b in [('jx','jy'),('jx','jz'),('jy','jz'),
             ('sx','sy'),('sx','sz'),('sy','sz')]:
     FEATURE_NAMES.append(f"xcorr_{a}_{b}")
-FEATURE_NAMES.append("zerocross_mag_jerk")                    # zerocross 1
-FEATURE_NAMES.append("peak_rate_mag_jerk")                    # peaks 1
-for ch in ['mx','my','mz','sx','sy','sz']:                    # trend 18
+FEATURE_NAMES.append("zerocross_mag_jerk")
+FEATURE_NAMES.append("peak_rate_mag_jerk")
+for ch in ['mx','my','mz','sx','sy','sz']:
     FEATURE_NAMES += [f"{ch}_first60", f"{ch}_last60", f"{ch}_trend"]
 assert len(FEATURE_NAMES) == 391, f"Name count mismatch: {len(FEATURE_NAMES)}"
 
@@ -432,7 +367,7 @@ FEATURE_GROUPS = [
     (365, 371, "crosscorr"),
     (371, 372, "zerocross"),
     (372, 373, "peaks"),
-    (373, 391, "trend_features"),   # NEW: first60, last60, trend per channel
+    (373, 391, "trend_features"),
 ]
 
 final_probas = []
@@ -471,12 +406,8 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FEATURE GROUP IMPORTANCE (LightGBM gain, avg over 15 models)")
-print("="*60)
+# feature group importance
+print("\nfeature group importance (LGB gain, avg 15 models):")
 
 n_features = X_tr_sc.shape[1]
 imp_matrix  = np.zeros((len(lgb_models), n_features))
@@ -498,7 +429,6 @@ imp_path = OUT_DIR / "feature_group_importance_run23.csv"
 df_imp.to_csv(imp_path, index=False)
 print(f"\n  Saved: {imp_path}")
 
-# Top-20 individual features by importance
 print(f"\n  Top 20 individual features (LightGBM gain):")
 print(f"  {'Rank':>4}  {'Feature':<32}  {'Importance':>12}  {'Group':<18}  {'%total':>7}")
 print(f"  {'-'*80}")
@@ -508,8 +438,7 @@ for rank, (fname, fimp) in enumerate(feat_imp_series.head(20).items(), 1):
     grp  = next((name for s, e, name in FEATURE_GROUPS if s <= fidx < e), "?")
     print(f"  {rank:>4}  {fname:<32}  {fimp:>12.1f}  {grp:<18}  {fimp/total*100:>6.2f}%")
 
-# Trend features breakdown — all 18, ranked by importance
-print(f"\n  Trend features breakdown (all 18, sorted by importance):")
+print(f"\n  Trend features breakdown (sorted by importance):")
 print(f"  {'Feature':<22}  {'Importance':>12}  {'%total':>7}")
 print(f"  {'-'*45}")
 trend_names = [n for n in FEATURE_NAMES if any(
@@ -518,7 +447,6 @@ trend_series = feat_imp_series[trend_names].sort_values(ascending=False)
 for fname, fimp in trend_series.items():
     print(f"  {fname:<22}  {fimp:>12.1f}  {fimp/total*100:>6.2f}%")
 
-# Save full per-feature importance
 df_full = feat_imp_series.reset_index()
 df_full.columns = ["feature", "importance"]
 df_full["pct"] = df_full["importance"] / total * 100
@@ -529,22 +457,12 @@ df_full.to_csv(OUT_DIR / "per_feature_importance_run23.csv", index=False)
 print(f"\n  Full per-feature importance saved: per_feature_importance_run23.csv")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run23.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train rate):")
-for c in range(6):
-    cnt = (preds == c).sum()
-    exp = int(len(preds) * counts[c] / len(y_tr))
-    print(f"  Class {c}: {cnt:5d}  (expected ~{exp})")
-
-print(f"\nOptimal scales:          {np.round(optimal_scales, 3)}")
-print(f"CV F1 (threshold-opt):   {opt_f1:.4f}")
-print(f"CV F1 (baseline argmax): {baseline_f1:.4f}")
-print(f"Baseline run18:          0.7738")
+print(f"submission saved to {out_path}")
+print(f"CV F1: {baseline_f1:.4f}  -> after threshold opt: {opt_f1:.4f}")
+print(f"optimal scales: {np.round(optimal_scales, 3)}")

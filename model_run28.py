@@ -1,47 +1,4 @@
-"""
-model_run28.py — 750 features (run27's 716 + 34 new physically motivated), no augmentation
-
-Public LB run27: 0.7895. Bottleneck: C2 walk_down (6% recall → 68% → walk_flat),
-C5 other (59% recall), C3 walk_up (74% recall).
-
-New features (34), all physically motivated and validated against the confusion matrix:
-  [1] Tilt angle (6)          — atan2(mean_z, sqrt(mean_x²+mean_y²)) per timestep.
-                                 Gravity direction is consistent per activity: walk_up →
-                                 positive z-trend, walk_down → negative z-trend. Stats over
-                                 time directly distinguish the three walking classes.
-  [2] Axis covariance/corr (6)— pairwise cov+corr between mean_x/y/z. Forward body lean
-                                 on stairs creates consistent x-z coupling absent in flat
-                                 walking. Directly targets C2 vs C1 confusion.
-  [3] Mean-axis FFT (18)      — FFT of mean_x, mean_y, mean_z (not just std channels).
-                                 Captures low-frequency drift (< 0.5 Hz): stair climbing
-                                 creates slow periodic changes in phone orientation that
-                                 flat walking does not.
-  [4] Step rhythm regularity (4)— inter-peak interval stats of std_mag time series.
-                                 Stairs impose more constrained step intervals than flat
-                                 ground → lower coefficient of variation.
-
-Model changes vs run27:
-  [5] Stronger regularisation — min_child_samples 20→40, reg_lambda 1.0→2.0.
-                                 Reduces overfitting to training-user specific patterns.
-  [6] RF in final ensemble    — RandomForestClassifier(300 trees, balanced_subsample).
-                                 Uncorrelated errors with LGB/XGB → lower ensemble variance.
-
-Feature layout (750 total):
-  0– 77: mean_xyz axis stat+diff        (78)  ← axis-specific raw means
-  78–155: std_xyz  axis stat+diff        (78)
- 156–207: acc_mag+std_mag stat+diff      (52)
- 208–363: cross-magnitudes stat+diff    (156)
- 364–415: sum_features stat+diff         (52)
- 416–465: FFT+peak 5 channels            (50)
- 466–715: 10-window 5 channels          (250)
- 716–721: tilt angle                      (6)  ← NEW
- 722–727: axis covariance/correlation     (6)  ← NEW
- 728–745: mean_xyz FFT                   (18)  ← NEW
- 746–749: step rhythm regularity          (4)  ← NEW
- Total                                   750
-
-Paths: auto-detects Kaggle vs laptop (same as run26/27).
-"""
+# run28: 750 features (716 + 34 new: tilt, axis cov/corr, mean FFT, step rhythm), 5 LGB + 2 XGB + 1 RF, lr=0.03, stronger regularization
 
 import numpy as np
 import pandas as pd
@@ -74,9 +31,7 @@ print(f"Output dir: {OUT_DIR}")
 CLASS_NAMES = ["sit/stand", "walk_flat", "walk_down", "walk_up", "running", "other"]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING
-# ──────────────────────────────────────────────────────────────────────────────
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -92,9 +47,7 @@ def find_npz(name):
     if local.exists(): return str(local)
     raise FileNotFoundError(f"Cannot find {name}")
 
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
+print("loading data...")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -116,9 +69,7 @@ for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS (identical to run27)
-# ──────────────────────────────────────────────────────────────────────────────
+# feature helpers (same as run27)
 def _safe_skew_vec(ch):
     return np.array([skew(r) if np.std(r) >= 1e-12 else 0.0 for r in ch], dtype=np.float32)
 
@@ -126,7 +77,7 @@ def _safe_kurtosis_vec(ch):
     return np.array([kurtosis(r) if np.std(r) >= 1e-12 else 0.0 for r in ch], dtype=np.float32)
 
 def stat_features(ch, prefix):
-    """18 statistics per channel. ch: (N,T) → (N,18)"""
+    # 18 stats per channel
     q  = np.percentile(ch, [5, 10, 25, 75, 90, 95], axis=1).T
     m  = ch.mean(axis=1)
     e  = (ch**2).mean(axis=1)
@@ -146,7 +97,7 @@ def stat_features(ch, prefix):
     return f.astype(np.float32), names
 
 def diff_features(ch, prefix):
-    """8 temporal diff+trend features. ch: (N,T) → (N,8)"""
+    # 8 diff+trend features
     d = np.diff(ch, axis=1); a = np.abs(d)
     f = np.column_stack([
         d.mean(1), d.std(1), a.mean(1), a.max(1), (d**2).mean(1),
@@ -160,7 +111,7 @@ def diff_features(ch, prefix):
     return f.astype(np.float32), names
 
 def fft_features(ch, prefix):
-    """6 FFT features (rfft, no DC, low/high at 0.10 Hz). ch: (N,T) → (N,6)"""
+    # 6 FFT features
     N, T  = ch.shape
     freqs = np.fft.rfftfreq(T, d=1.0)
     out   = np.zeros((N, 6), dtype=np.float32)
@@ -180,7 +131,7 @@ def fft_features(ch, prefix):
     return out, names
 
 def peak_features(ch, prefix):
-    """4 peak features (threshold = mean + 0.5·std). ch: (N,T) → (N,4)"""
+    # 4 peak features
     N, T = ch.shape; out = np.zeros((N, 4), dtype=np.float32)
     for n in range(N):
         v = ch[n]
@@ -195,7 +146,7 @@ def peak_features(ch, prefix):
     return out, names
 
 def window_features(ch, prefix, n_windows=10):
-    """10 windows × 5 stats = 50 features. ch: (N,T) → (N,50)"""
+    # 10 windows x 5 stats = 50 features
     N, T = ch.shape; ws = T // n_windows
     parts, names = [], []
     for w in range(n_windows):
@@ -207,16 +158,9 @@ def window_features(ch, prefix, n_windows=10):
     return np.concatenate(parts, axis=1).astype(np.float32), names
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# NEW FEATURE HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# new feature helpers
 def tilt_angle_features(mx, my, mz):
-    """
-    Elevation angle of phone from horizontal: atan2(mean_z, sqrt(mean_x²+mean_y²)).
-    For 1-second mean values this captures the gravity component of phone orientation.
-    walk_up → positive z-drift, walk_down → negative z-drift, flat → stable.
-    (N,T) → (N,6)
-    """
+    # phone elevation angle: atan2(mean_z, sqrt(mean_x^2+mean_y^2)), stats over time
     tilt = np.arctan2(mz, np.sqrt(mx**2 + my**2))     # (N, 300), radians
     f = np.column_stack([
         tilt.mean(1),
@@ -232,11 +176,7 @@ def tilt_angle_features(mx, my, mz):
 
 
 def axis_covcorr_features(mx, my, mz):
-    """
-    Pairwise covariance and Pearson correlation between mean_x, mean_y, mean_z.
-    Forward body lean on stairs creates consistent x-z coupling absent in flat walking.
-    (N,T) → (N,6): cov_xy, corr_xy, cov_xz, corr_xz, cov_yz, corr_yz
-    """
+    # pairwise cov and corr between mean_x/y/z axes
     parts, names = [], []
     for (a, b, nm) in [(mx, my, "xy"), (mx, mz, "xz"), (my, mz, "yz")]:
         ma = a.mean(1, keepdims=True); mb = b.mean(1, keepdims=True)
@@ -248,12 +188,7 @@ def axis_covcorr_features(mx, my, mz):
 
 
 def step_rhythm_features(std_mag):
-    """
-    Detect high-energy periods in the per-second std_mag envelope and compute
-    inter-peak interval statistics. Stairs impose more regular step intervals than
-    flat ground → lower coefficient of variation of intervals.
-    std_mag: (N,T) → (N,4)
-    """
+    # inter-peak interval stats of std_mag (CV = step regularity)
     N, T = std_mag.shape
     out  = np.zeros((N, 4), dtype=np.float32)
     for n in range(N):
@@ -271,9 +206,7 @@ def step_rhythm_features(std_mag):
     return out, names
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# MAIN FEATURE EXTRACTION — 750 features
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction — 750 features
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -290,7 +223,7 @@ def extract(X):
     mean_sum   = mx + my + mz
     std_sum    = sx + sy + sz
 
-    # ── Run27 base: 716 features ──────────────────────────────────────────────
+    # run27 base (716 features)
     base = [
         ("mean_x", mx), ("mean_y", my), ("mean_z", mz),
         ("std_x",  sx), ("std_y",  sy), ("std_z",  sz),
@@ -320,21 +253,21 @@ def extract(X):
         wf, wn = window_features(ch, name)
         feats_list.append(wf); feat_names += wn
 
-    # ── NEW: 34 additional physical features ─────────────────────────────────
-    # [1] Tilt angle (6) — phone elevation from horizontal
+    # new features (+34)
+    # tilt angle (6)
     tf, tn = tilt_angle_features(mx, my, mz)
     feats_list.append(tf); feat_names += tn
 
-    # [2] Axis covariance / correlation (6) — between-axis coupling
+    # axis cov/corr (6)
     cf, cn = axis_covcorr_features(mx, my, mz)
     feats_list.append(cf); feat_names += cn
 
-    # [3] Mean-axis FFT (18) — low-frequency drift in gravity direction
+    # mean-axis FFT (18)
     for name, ch in [("mean_x", mx), ("mean_y", my), ("mean_z", mz)]:
         ff, fn = fft_features(ch, name)
         feats_list.append(ff); feat_names += fn
 
-    # [4] Step rhythm regularity (4) — inter-peak interval CV of std_mag envelope
+    # step rhythm (4)
     sr, sn = step_rhythm_features(std_mag)
     feats_list.append(sr); feat_names += sn
 
@@ -358,13 +291,8 @@ def clean(F_tr, F_te):
 X_tr_feat, X_te_feat = clean(X_tr_feat, X_te_feat)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GROUPKFOLD CV — stronger regularisation vs run27
-# min_child_samples 20→40, reg_lambda 1.0→2.0
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("GROUPKFOLD CV (5 splits, early stopping, stronger reg vs run27)")
-print("=" * 60)
+# groupkfold cv — stronger reg vs run27
+print("\ncv (GroupKFold 5 splits, early stopping)...")
 
 gkf        = GroupKFold(n_splits=5)
 loo_probas = np.zeros((len(y_tr), 6), dtype=np.float64)
@@ -382,9 +310,9 @@ for fold, (tr_idx, va_idx) in enumerate(gkf.split(X_tr_feat, y_tr, groups=users)
         objective='multiclass', num_class=6,
         n_estimators=2000, learning_rate=0.03,
         num_leaves=31, max_depth=-1,
-        min_child_samples=40,       # 20→40: requires larger leaf nodes → less overfitting
+        min_child_samples=40,
         subsample=0.85, colsample_bytree=0.85,
-        reg_alpha=0.1, reg_lambda=2.0,  # 1.0→2.0: stronger L2 regularisation
+        reg_alpha=0.1, reg_lambda=2.0,
         random_state=SEED + fold, n_jobs=-1, verbose=-1,
     )
     m.fit(
@@ -408,7 +336,7 @@ for fold, (tr_idx, va_idx) in enumerate(gkf.split(X_tr_feat, y_tr, groups=users)
           f"Macro F1={fold_f1:.4f}  Acc={accuracy_score(y_f_va, va_proba.argmax(1)):.4f}")
 
 avg_best_iter = int(np.mean(best_iters) * 1.10)
-print(f"\nBest iters per fold: {best_iters}  →  final n_estimators = {avg_best_iter}")
+print(f"\nBest iters per fold: {best_iters}  ->  final n_estimators = {avg_best_iter}")
 
 loo_preds    = loo_probas.argmax(1)
 baseline_f1  = f1_score(y_tr, loo_preds, average='macro')
@@ -419,15 +347,12 @@ print("Per-class F1 :", [f"{f:.3f}" for f in per_class_f1])
 print("\n" + classification_report(y_tr, loo_preds, target_names=CLASS_NAMES, digits=4))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CONFUSION MATRIX
-# ──────────────────────────────────────────────────────────────────────────────
 cm = confusion_matrix(y_tr, loo_preds, normalize='true')
 print("CV Confusion Matrix (row=true, col=predicted):")
 print(f"  {'':16}" + "".join(f"    C{c}" for c in range(6)))
 for i in range(6):
     row  = "".join(f"  {cm[i,j]:.2f}" for j in range(6))
-    flag = "  ← target bottleneck" if i == 2 else ""
+    flag = "  <- C2 bottleneck" if i == 2 else ""
     print(f"  C{i} {CLASS_NAMES[i]:<14}{row}{flag}")
 
 fig, ax = plt.subplots(figsize=(8, 6))
@@ -442,23 +367,19 @@ plt.close()
 print("  Saved: run28_confusion_matrix.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# COVARIANCE & CORRELATION MATRICES OF OOF PROBABILITIES
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("OOF PROBABILITY COVARIANCE & CORRELATION MATRICES")
-print("=" * 60)
+# oof covariance/correlation matrices
+print("\nOOF probability covariance/correlation matrices...")
 
 cov_mat  = np.cov(loo_probas.T)
 std_diag = np.sqrt(np.diag(cov_mat))
 corr_mat = cov_mat / (std_diag[:, None] * std_diag[None, :] + 1e-12)
 
-print("\nCovariance matrix (6×6):")
+print("\nCovariance matrix (6x6):")
 print(f"  {'':14}" + "".join(f"  {n:>10}" for n in CLASS_NAMES))
 for i in range(6):
     print(f"  {CLASS_NAMES[i]:<14}" + "".join(f"  {cov_mat[i,j]:>10.5f}" for j in range(6)))
 
-print("\nCorrelation matrix (6×6):")
+print("\nCorrelation matrix (6x6):")
 print(f"  {'':14}" + "".join(f"  {n:>10}" for n in CLASS_NAMES))
 for i in range(6):
     print(f"  {CLASS_NAMES[i]:<14}" + "".join(f"  {corr_mat[i,j]:>10.4f}" for j in range(6)))
@@ -500,12 +421,8 @@ plt.close()
 print("  Saved: run28_soft_confusion.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("THRESHOLD OPTIMIZATION")
-print("=" * 60)
+# threshold optimization
+print("\nthreshold optimization...")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -554,12 +471,8 @@ plt.close()
 print("  Saved: run28_per_class_f1.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — 5 LGB + 2 XGB + 1 RF = 8 models
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print(f"FINAL TRAINING (5 LGB @ {avg_best_iter} iters + 2 XGB + 1 RF = 8 models)")
-print("=" * 60)
+# final training — 5 LGB + 2 XGB + 1 RF
+print(f"\nfinal training (5 LGB @ {avg_best_iter} iters + 2 XGB + 1 RF)...")
 
 sw_all       = compute_sample_weight('balanced', y_tr)
 final_probas = []
@@ -591,7 +504,6 @@ for seed in range(2):
     final_probas.append(xm.predict_proba(X_te_feat))
 print(f"  XGBoost:  {len(final_probas) - xgb_start} models")
 
-# RF: balanced_subsample rebalances each bootstrap draw independently
 rf = RandomForestClassifier(
     n_estimators=300, max_features='sqrt', min_samples_leaf=5,
     class_weight='balanced_subsample', random_state=SEED, n_jobs=-1,
@@ -607,26 +519,22 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE (LGB only — RF importance plotted separately)
-# ──────────────────────────────────────────────────────────────────────────────
+# feature group importance
 FEATURE_GROUPS = [
-    (  0,  78, "mean_xyz_axis_stat+diff"),     # axis-specific raw means — KEY
+    (  0,  78, "mean_xyz_axis_stat+diff"),
     ( 78, 156, "std_xyz_axis_stat+diff"),
     (156, 208, "acc_mag+std_mag_stat+diff"),
     (208, 364, "cross_magnitudes_stat+diff"),
     (364, 416, "sum_features_stat+diff"),
     (416, 466, "fft_peak_5ch"),
     (466, 716, "window_10win_5ch"),
-    (716, 722, "tilt_angle"),                  # NEW
-    (722, 728, "axis_cov_corr"),               # NEW
-    (728, 746, "mean_xyz_fft"),                # NEW
-    (746, 750, "step_rhythm"),                 # NEW
+    (716, 722, "tilt_angle"),
+    (722, 728, "axis_cov_corr"),
+    (728, 746, "mean_xyz_fft"),
+    (746, 750, "step_rhythm"),
 ]
 
-print("\n" + "=" * 60)
-print("FEATURE GROUP IMPORTANCE (LightGBM gain, avg over 5 models)")
-print("=" * 60)
+print("\nfeature group importance (LGB gain, avg 5 models):")
 imp_matrix = np.zeros((len(lgb_models), X_tr_feat.shape[1]))
 for i, m in enumerate(lgb_models):
     imp_matrix[i] = m.booster_.feature_importance(importance_type='gain')
@@ -639,7 +547,7 @@ group_rows = []
 for start, end, name in FEATURE_GROUPS:
     g   = avg_imp[start:end].sum(); pct = g / total * 100
     group_rows.append((name, end-start, g, pct))
-    tag = "  ← NEW" if start >= 716 else ("  ← axis-specific" if "mean_xyz" in name else "")
+    tag = "  [NEW]" if start >= 716 else ""
     print(f"  {name:<34} {end-start:>5}   {pct:>7.1f}%{tag}")
 
 new_total = sum(r[3] for r in group_rows if r[0] in
@@ -648,7 +556,6 @@ print(f"\n  New features contribute {new_total:.1f}% of total LGB gain")
 
 fig, axes = plt.subplots(1, 2, figsize=(16, 5))
 
-# LGB group importance
 gr_s = sorted(group_rows, key=lambda x: x[2], reverse=True)
 new_names = {"tilt_angle","axis_cov_corr","mean_xyz_fft","step_rhythm"}
 colors_g = ['#e67e22' if r[0] in new_names
@@ -656,10 +563,9 @@ colors_g = ['#e67e22' if r[0] in new_names
             else '#5bc0de' for r in gr_s]
 axes[0].barh([r[0] for r in gr_s], [r[3] for r in gr_s], color=colors_g)
 axes[0].set_xlabel('% of total LGB gain')
-axes[0].set_title('LGB Feature group importance\n(orange=new, red=axis-mean, blue=existing)')
+axes[0].set_title('LGB feature group importance (orange=new, blue=existing)')
 axes[0].invert_yaxis()
 
-# RF feature importance (top groups)
 rf_imp = rf.feature_importances_
 rf_group_rows = []
 for start, end, name in FEATURE_GROUPS:
@@ -671,7 +577,7 @@ rf_colors = ['#e67e22' if r[0] in new_names
              else '#5bc0de' for r in rf_s]
 axes[1].barh([r[0] for r in rf_s], [r[1] for r in rf_s], color=rf_colors)
 axes[1].set_xlabel('% of total RF importance')
-axes[1].set_title('RF Feature group importance\n(orange=new, red=axis-mean, blue=existing)')
+axes[1].set_title('RF feature group importance (orange=new, blue=existing)')
 axes[1].invert_yaxis()
 
 plt.suptitle('Feature group importance — run28 (750 features)', fontsize=11)
@@ -686,24 +592,12 @@ for rank, idx in enumerate(top20, 1):
     print(f"  {rank:2d}. {feat_names[idx]:<50}  gain={avg_imp[idx]:.1f}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run28.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train rate):")
-for c in range(6):
-    cnt = (preds == c).sum()
-    exp = int(len(preds) * counts[c] / len(y_tr))
-    delta = cnt - exp
-    print(f"  Class {c} {CLASS_NAMES[c]:<12}: {cnt:5d}  (expected ~{exp}, delta {delta:+d})")
-
-print(f"\nOptimal scales:          {np.round(optimal_scales, 3)}")
-print(f"OOF F1 (baseline):       {baseline_f1:.4f}")
-print(f"OOF F1 (threshold-opt):  {opt_f1:.4f}")
-print(f"run27 OOF:               ~0.730  Kaggle: 0.7895")
-print(f"run28 changes:           +34 features, min_child=40, reg_lambda=2, +RF ensemble")
+print(f"submission saved to {out_path}")
+print(f"OOF F1: {baseline_f1:.4f}  -> after threshold opt: {opt_f1:.4f}")
+print(f"optimal scales: {np.round(optimal_scales, 3)}")

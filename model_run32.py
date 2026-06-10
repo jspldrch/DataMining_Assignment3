@@ -1,44 +1,4 @@
-"""
-model_run32.py — run31 + Gaussian noise augmentation (C2×5, C4×5, C5×2, C3×1)
-
-WHY this run:
-  The run summary shows that run27–run31 (all 716-feat runs) were submitted WITHOUT
-  augmentation. But run23 vs run25 proved that augmentation gives +0.016 on the
-  382-feat set (0.7633 → 0.7792). This is the largest untested combination:
-  716-feat + augmentation.
-
-  run31 (716 feat, no aug) = 0.7906   ← current best
-  run32 (716 feat, + aug)  = ?.????   ← expected ~0.79+ something
-
-Augmentation strategy (matching run23 which gave the best augmented result):
-  C2 walk_down : ×5 noisy copies  ← hardest class, main F1 bottleneck
-  C4 running   : ×5 noisy copies
-  C5 other     : ×2 noisy copies
-  C3 walk_up   : ×1 noisy copy
-  Noise: Gaussian N(0, 0.02 g) added to raw (T=300, C=6) time series
-         BEFORE feature extraction (physically meaningful, not feature-level noise)
-
-CV correctness:
-  GroupKFold splits on original indices only.
-  Augmented copies of TRAINING-fold users → added to training fold.
-  Validation fold → original samples only (no augmented copies evaluated).
-  This avoids data leakage while using all augmented data for training.
-
-Everything else identical to run31:
-  716 features (run27/30/31 exact set), no normalization, lr=0.01, patience=300
-  5 LGB + 2 XGB + 1 RF + Nelder-Mead threshold optimization (8 restarts)
-
-Runtime estimate (Kaggle, CPU accelerator = OFF, n_jobs=-1 uses all 4 cores):
-  Feature extraction: ~20–30 min  (original ~8 min + augmented ~18 min)
-  CV (5 folds, lr=0.01, patience=300, ~3× data vs run31): ~90–120 min
-  Final training (8 models on full augmented set): ~40–60 min
-  Total: ~3–4 hours  →  well within Kaggle's 9-hour CPU limit
-
-Accelerator recommendation: CPU (no GPU)
-  LightGBM/XGBoost/RF are CPU-parallel (n_jobs=-1).
-  The Kaggle GPU instance gives only 2 CPU cores vs 4 on CPU-only — this
-  would make tree training ~2× SLOWER. Do NOT enable GPU accelerator.
-"""
+# run32: 716 features, 5 LGB + 2 XGB + 1 RF, lr=0.01, patience=300, Gaussian noise augmentation (C2x5, C4x5, C5x2, C3x1)
 
 import numpy as np
 import pandas as pd
@@ -75,9 +35,8 @@ AUG_CONFIG = {2: 5, 4: 5, 5: 2, 3: 1}
 NOISE_STD  = 0.02   # 0.02 g — appropriate for wrist accelerometer
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING
-# ──────────────────────────────────────────────────────────────────────────────
+
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -93,9 +52,7 @@ def find_npz(name):
     if local.exists(): return str(local)
     raise FileNotFoundError(f"Cannot find {name}")
 
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
+print("loading data...")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -117,17 +74,10 @@ for u, c in zip(unique, counts):
     print(f"  Class {u} {CLASS_NAMES[u]:<12}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# AUGMENTATION  (raw signal level, before feature extraction)
-# ──────────────────────────────────────────────────────────────────────────────
-def augment_data(X_raw, y, users_arr, aug_config, noise_std=0.02, seed=42):
-    """
-    Creates augmented copies of hard-class samples.
-    Returns ONLY the new copies (not originals) as separate arrays.
-    This keeps original and augmented data easy to track during CV.
 
-    Each copy = original window + independent Gaussian noise on every channel/timestep.
-    """
+# augmentation at raw signal level (before feature extraction)
+def augment_data(X_raw, y, users_arr, aug_config, noise_std=0.02, seed=42):
+    """Returns only the new augmented copies (not originals), for easy CV tracking."""
     rng = np.random.RandomState(seed)
     X_list, y_list, u_list = [], [], []
     for cls, n_copies in aug_config.items():
@@ -141,9 +91,7 @@ def augment_data(X_raw, y, users_arr, aug_config, noise_std=0.02, seed=42):
             np.concatenate(y_list),
             np.concatenate(u_list))
 
-print("\n" + "=" * 60)
-print("DATA AUGMENTATION")
-print("=" * 60)
+print("\naugmenting data...")
 X_aug_raw, y_aug, users_aug = augment_data(X_tr, y_tr, users, AUG_CONFIG, NOISE_STD)
 print(f"Original train samples:   {len(X_tr)}")
 for cls, n in sorted(AUG_CONFIG.items()):
@@ -153,9 +101,8 @@ print(f"Total augmented copies:   {len(X_aug_raw)}")
 print(f"Grand total for training: {len(X_tr) + len(X_aug_raw)}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS — identical to run27/30/31
-# ──────────────────────────────────────────────────────────────────────────────
+
+# feature helpers
 def _safe_skew_vec(ch):
     return np.array([skew(r)     if np.std(r) >= 1e-12 else 0.0 for r in ch], dtype=np.float32)
 
@@ -238,9 +185,8 @@ def window_features(ch, prefix, n_windows=10):
     return np.concatenate(parts, axis=1).astype(np.float32), names
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION — 716 features, identical to run27/30/31
-# ──────────────────────────────────────────────────────────────────────────────
+
+# feature extraction (716 features)
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -305,15 +251,13 @@ assert X_te_feat.shape[1] == 716
 print(f"  Done: {X_te_feat.shape}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE CLEANING
-# Impute NaN/Inf using training medians only (no leakage from aug or test)
-# ──────────────────────────────────────────────────────────────────────────────
+
+# feature cleaning (impute with train medians only)
 def clean_all(F_tr, F_aug, F_te):
     F_tr  = np.where(np.isfinite(F_tr),  F_tr,  np.nan)
     F_aug = np.where(np.isfinite(F_aug), F_aug, np.nan)
     F_te  = np.where(np.isfinite(F_te),  F_te,  np.nan)
-    meds  = np.nanmedian(F_tr, axis=0)   # computed from originals only
+    meds  = np.nanmedian(F_tr, axis=0)
     for F in [F_tr, F_aug, F_te]:
         nans = np.isnan(F)
         F[nans] = np.take(meds, np.where(nans)[1])
@@ -324,18 +268,9 @@ def clean_all(F_tr, F_aug, F_te):
 X_tr_feat, X_aug_feat, X_te_feat = clean_all(X_tr_feat, X_aug_feat, X_te_feat)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GROUPKFOLD CV — with augmentation
-#
-# Split on original indices.  For each fold:
-#   - validation: original samples of held-out users (unchanged)
-#   - training:   original + augmented copies of training users
-#
-# This means augmented copies NEVER appear in validation → no leakage.
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("GROUPKFOLD CV  (lr=0.01, patience=300, + augmentation)")
-print("=" * 60)
+
+# groupkfold cv with augmentation (aug copies only in training fold, not validation)
+print("\ngroupkfold cv...")
 
 gkf        = GroupKFold(n_splits=5)
 loo_probas = np.zeros((len(y_tr), 6), dtype=np.float64)  # indexed by original samples
@@ -345,13 +280,13 @@ fold_f1s   = []
 for fold, (tr_idx, va_idx) in enumerate(
         gkf.split(X_tr_feat, y_tr, groups=users), start=1):
 
-    # ── Identify augmented copies belonging to training-fold users ──────────
+    # add augmented copies for training fold only
     train_users = set(users[tr_idx])
     aug_mask    = np.array([u in train_users for u in users_aug])
 
     X_f_tr = np.concatenate([X_tr_feat[tr_idx],  X_aug_feat[aug_mask]])
     y_f_tr = np.concatenate([y_tr[tr_idx],        y_aug[aug_mask]])
-    X_f_va = X_tr_feat[va_idx]   # ORIGINAL samples only
+    X_f_va = X_tr_feat[va_idx]   # original samples only
     y_f_va = y_tr[va_idx]
 
     print(f"\nFold {fold}/5  "
@@ -363,7 +298,7 @@ for fold, (tr_idx, va_idx) in enumerate(
     m = lgb.LGBMClassifier(
         objective='multiclass', num_class=6,
         n_estimators=5000,
-        learning_rate=0.01,          # same as run31
+        learning_rate=0.01,
         num_leaves=31, max_depth=-1,
         min_child_samples=20, subsample=0.85, colsample_bytree=0.85,
         reg_alpha=0.1, reg_lambda=1.0,
@@ -390,8 +325,7 @@ for fold, (tr_idx, va_idx) in enumerate(
           f"Macro F1={fold_f1:.4f}  Acc={accuracy_score(y_f_va, va_proba.argmax(1)):.4f}")
 
 avg_best_iter = int(np.mean(best_iters) * 1.10)
-print(f"\nBest iters per fold: {best_iters}  →  final n_estimators = {avg_best_iter}")
-print(f"  run31 (no aug): expected ~400–600")
+print(f"\nBest iters per fold: {best_iters}  ->  final n_estimators = {avg_best_iter}")
 
 loo_preds    = loo_probas.argmax(1)
 baseline_f1  = f1_score(y_tr, loo_preds, average='macro')
@@ -399,19 +333,18 @@ per_class_f1 = f1_score(y_tr, loo_preds, average=None)
 print(f"\nOOF macro F1 : {baseline_f1:.4f}")
 print(f"Mean fold F1 : {np.mean(fold_f1s):.4f} ± {np.std(fold_f1s):.4f}")
 print("Per-class F1 :", [f"{f:.3f}" for f in per_class_f1])
-print(f"  C2 walk_down: {per_class_f1[2]:.3f}  (run31 target: >0.244)")
+print(f"  C2 walk_down: {per_class_f1[2]:.3f}")
 print("\n" + classification_report(y_tr, loo_preds, target_names=CLASS_NAMES, digits=4))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CONFUSION MATRIX
-# ──────────────────────────────────────────────────────────────────────────────
+
+# confusion matrix
 cm = confusion_matrix(y_tr, loo_preds, normalize='true')
 print("CV Confusion Matrix (row=true, col=predicted):")
 print(f"  {'':16}" + "".join(f"    C{c}" for c in range(6)))
 for i in range(6):
     row  = "".join(f"  {cm[i,j]:.2f}" for j in range(6))
-    flag = "  ← C2 bottleneck" if i == 2 else ""
+    flag = "  <- C2 bottleneck" if i == 2 else ""
     print(f"  C{i} {CLASS_NAMES[i]:<14}{row}{flag}")
 
 fig, ax = plt.subplots(figsize=(8, 6))
@@ -428,9 +361,8 @@ plt.close()
 print("  Saved: run32_confusion_matrix.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SOFT CONFUSION MATRIX
-# ──────────────────────────────────────────────────────────────────────────────
+
+# soft confusion matrix
 soft_cm = np.zeros((6, 6))
 for c in range(6):
     soft_cm[c] = loo_probas[y_tr == c].mean(axis=0)
@@ -438,16 +370,13 @@ print("\nSoft confusion (mean predicted probability per true class):")
 print(f"  {'':14}" + "".join(f"  {n:>10}" for n in CLASS_NAMES))
 for i in range(6):
     print(f"  {CLASS_NAMES[i]:<14}" + "".join(f"  {soft_cm[i,j]:>10.4f}" for j in range(6)))
-print(f"\n  C2→C1 confusion: {soft_cm[2,1]:.4f}  (run31 ref: 0.477)")
-print(f"  C2 self-proba:   {soft_cm[2,2]:.4f}  (run31 ref: 0.216)")
+print(f"\n  C2->C1 confusion: {soft_cm[2,1]:.4f}")
+print(f"  C2 self-proba:    {soft_cm[2,2]:.4f}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION (Nelder-Mead, 8 restarts)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("THRESHOLD OPTIMIZATION")
-print("=" * 60)
+
+# threshold optimization (nelder-mead, 8 restarts)
+print("\nthreshold optimization...")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -495,16 +424,10 @@ plt.close()
 print("  Saved: run32_per_class_f1.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — full original + all augmented data
-# 5 LGB + 2 XGB + 1 RF = 8 models  (identical architecture to run31)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print(f"FINAL TRAINING (5 LGB @ {avg_best_iter} iters + 2 XGB + 1 RF = 8 models)")
-print(f"Training on {len(X_tr_feat) + len(X_aug_feat)} samples (orig + all aug)")
-print("=" * 60)
 
-# Combine original + all augmented for final training
+# final training on original + all augmented data (5 LGB + 2 XGB + 1 RF)
+print(f"\nfinal training ({len(X_tr_feat) + len(X_aug_feat)} samples, n_estimators={avg_best_iter})...")
+
 X_final = np.concatenate([X_tr_feat, X_aug_feat])
 y_final  = np.concatenate([y_tr,      y_aug])
 sw_all   = compute_sample_weight('balanced', y_final)
@@ -526,7 +449,7 @@ for seed in range(5):
     final_probas.append(m.predict_proba(X_te_feat))
     lgb_models.append(m)
     print(f"  LGB seed={seed} done")
-print(f"  LightGBM: {len(lgb_models)} models (lr=0.01, n_estimators={avg_best_iter})")
+print(f"  LightGBM: {len(lgb_models)} models")
 
 xgb_start = len(final_probas)
 for seed in range(2):
@@ -556,9 +479,8 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE
-# ──────────────────────────────────────────────────────────────────────────────
+
+# feature group importance
 FEATURE_GROUPS = [
     (  0,  78, "mean_xyz_axis_stat+diff"),
     ( 78, 156, "std_xyz_axis_stat+diff"),
@@ -569,9 +491,7 @@ FEATURE_GROUPS = [
     (466, 716, "window_10win_5ch"),
 ]
 
-print("\n" + "=" * 60)
-print("FEATURE GROUP IMPORTANCE (LightGBM gain, avg over 5 models)")
-print("=" * 60)
+print("\nfeature group importance...")
 imp_matrix = np.zeros((len(lgb_models), X_final.shape[1]))
 for i, m in enumerate(lgb_models):
     imp_matrix[i] = m.booster_.feature_importance(importance_type='gain')
@@ -594,32 +514,19 @@ for start, end, name in FEATURE_GROUPS:
     print(f"  {name:<34} {end-start:>5}   {pct:>7.1f}%   {r31:.1f}% {delta}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run32.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train rate):")
+print(f"submission saved to {out_path}")
+print("\nPrediction distribution:")
 for c in range(6):
     cnt = (preds == c).sum()
     exp = int(len(preds) * counts[c] / len(y_tr))
     print(f"  Class {c} {CLASS_NAMES[c]:<12}: {cnt:5d}  (expected ~{exp}, delta {cnt-exp:+d})")
 
-print(f"\n{'─'*60}")
-print(f"run32 SUMMARY")
-print(f"{'─'*60}")
-print(f"  Augmentation:            C2×5, C4×5, C5×2, C3×1  noise_std={NOISE_STD}")
-print(f"  Training samples:        {len(X_tr)} orig + {len(X_aug_raw)} aug = {len(X_final)}")
-print(f"  Best iters (CV folds):   {best_iters}  → final={avg_best_iter}")
-print(f"  OOF F1 (baseline):       {baseline_f1:.4f}")
-print(f"  OOF F1 (threshold-opt):  {opt_f1:.4f}")
-print(f"  Optimal scales:          {np.round(optimal_scales, 3)}")
-print(f"\n  Run comparison (OOF → Kaggle gap consistently ~+0.060):")
-print(f"  run31 (716 feat, no aug):  OOF=~0.730  Kaggle=0.7906")
-print(f"  run32 (716 feat, + aug):   OOF={baseline_f1:.4f}  Kaggle=?.????")
-print(f"  Benchmark: run23 aug effect on 382-feat: +0.016 (0.7633→0.7792)")
-print(f"{'─'*60}")
+print(f"\nOOF F1 (baseline): {baseline_f1:.4f}  OOF F1 (opt): {opt_f1:.4f}")
+print(f"best_iters: {best_iters}  -> final={avg_best_iter}")

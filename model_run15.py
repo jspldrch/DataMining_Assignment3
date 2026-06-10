@@ -1,15 +1,4 @@
-"""
-model_run15.py — Aggressive Feature Selection + LightGBM
-Uses original CSV data (not NPZ) with aggressive feature pruning
-
-Key characteristics:
-  - Loads original CSV files
-  - Per-user normalization
-  - Aggressive feature selection (373 → 50 features, 86.6% reduction)
-  - LightGBM ensemble (15 models)
-  
-Score: 0.7565
-"""
+# run15: 373 -> ~50 features (aggressive selection), 15 LGB, CSV data, score 0.7565
 
 import numpy as np
 import pandas as pd
@@ -24,9 +13,6 @@ import lightgbm as lgb
 import warnings
 warnings.filterwarnings('ignore')
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
@@ -34,16 +20,13 @@ print(f"Output dir: {OUT_DIR}")
 SEED = 42
 np.random.seed(SEED)
 
-# ============================================================================
-# LOAD ORIGINAL CSV DATA
-# ============================================================================
+# load original CSV data
 def load_csv_data(train_path, test_path):
     train_path = Path(train_path)
     test_path = Path(test_path)
     feature_cols = ["mean_x", "mean_y", "mean_z", "std_x", "std_y", "std_z"]
     seq_len = 300
-    
-    # Load training data
+
     print("Loading training data...")
     X_train, y_train, train_users, train_file_ids = [], [], [], []
     
@@ -65,7 +48,6 @@ def load_csv_data(train_path, test_path):
             train_users.append(user_name)
             train_file_ids.append(int(df["file_id"].iloc[0]))
     
-    # Load test data
     print("Loading test data...")
     X_test, test_ids, test_users = [], [], []
     
@@ -90,11 +72,6 @@ def load_csv_data(train_path, test_path):
             np.array(train_file_ids), np.array(X_test), np.array(test_ids), 
             np.array(test_users))
 
-# Load data
-print("\n" + "="*60)
-print("LOADING ORIGINAL CSV DATA")
-print("="*60)
-
 X_train_raw, y_train, train_users, train_file_ids, X_test_raw, test_ids, test_users = load_csv_data(
     "train/train", "test/test"
 )
@@ -104,9 +81,7 @@ print(f"Train: {X_train_raw.shape}, Test: {X_test_raw.shape}")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_train)*100:.1f}%)")
 
-# ============================================================================
-# PER-USER NORMALIZATION
-# ============================================================================
+# per-user normalization
 def user_normalize(X, user_ids):
     X_out = X.copy()
     for uid in np.unique(user_ids):
@@ -122,9 +97,7 @@ print("\nPer-user normalization...")
 X_train = user_normalize(X_train_raw, train_users)
 X_test = user_normalize(X_test_raw, test_users)
 
-# ============================================================================
-# FEATURE EXTRACTION (373 features)
-# ============================================================================
+# feature extraction (373 features)
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s,1),
@@ -227,28 +200,23 @@ X_train_feat = extract_features(X_train)
 X_test_feat = extract_features(X_test)
 print(f"  Train: {X_train_feat.shape}, Test: {X_test_feat.shape}")
 
-# Scale features
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train_feat)
 X_test_scaled = scaler.transform(X_test_feat)
 
-# ============================================================================
-# AGGRESSIVE FEATURE SELECTION (373 → 50 features)
-# ============================================================================
-print("\n" + "="*60)
-print("AGGRESSIVE FEATURE SELECTION")
-print("="*60)
+# aggressive feature selection (373 -> ~50)
+print("\naggressive feature selection")
 
 original_count = X_train_scaled.shape[1]
 print(f"Original features: {original_count}")
 
-# Step 1: Variance threshold (remove constant features)
+# step 1: variance threshold
 selector_var = VarianceThreshold(threshold=0.01)
 X_train_var = selector_var.fit_transform(X_train_scaled)
 X_test_var = selector_var.transform(X_test_scaled)
 print(f"After variance threshold: {X_train_var.shape[1]}")
 
-# Step 2: Correlation-based elimination (remove highly correlated)
+# step 2: remove highly correlated features
 corr_matrix = pd.DataFrame(X_train_var).corr().abs()
 upper_tri = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
 high_corr = [col for col in upper_tri.columns if any(upper_tri[col] > 0.95)]
@@ -263,26 +231,26 @@ else:
     X_test_corr = X_test_var
     print(f"No highly correlated features found")
 
-# Step 3: Mutual Information selection (keep top 30%)
+# step 3: mutual information (top 30%)
 mi_scores = mutual_info_classif(X_train_corr, y_train, random_state=SEED)
-mi_threshold = np.percentile(mi_scores, 70)  # Keep top 30%
+mi_threshold = np.percentile(mi_scores, 70)
 mi_mask = mi_scores >= mi_threshold
 X_train_mi = X_train_corr[:, mi_mask]
 X_test_mi = X_test_corr[:, mi_mask]
 print(f"After mutual info (top 30%): {X_train_mi.shape[1]}")
 
-# Step 4: LightGBM importance (keep top 40%)
+# step 4: LGB importance (top 40%)
 quick_lgb = lgb.LGBMClassifier(n_estimators=200, random_state=SEED, n_jobs=-1, verbose=-1)
 quick_lgb.fit(X_train_mi, y_train)
 importances = quick_lgb.feature_importances_
-importance_threshold = np.percentile(importances, 60)  # Keep top 40%
+importance_threshold = np.percentile(importances, 60)
 importance_mask = importances >= importance_threshold
 X_train_lgb = X_train_mi[:, importance_mask]
 X_test_lgb = X_test_mi[:, importance_mask]
 print(f"After LGBM importance (top 40%): {X_train_lgb.shape[1]}")
 
-# Step 5: RFECV (final selection)
-print("Running RFECV (this may take a few minutes)...")
+# step 5: RFECV final selection
+print("Running RFECV...")
 if X_train_lgb.shape[0] > 5000:
     sample_idx = np.random.choice(X_train_lgb.shape[0], 5000, replace=False)
     X_sample = X_train_lgb[sample_idx]
@@ -311,15 +279,10 @@ except Exception as e:
     X_train_final = X_train_lgb
     X_test_final = X_test_lgb
 
-print(f"\n✅ Final features: {X_train_final.shape[1]} (from {original_count} original)")
-print(f"   Reduction: {(1 - X_train_final.shape[1]/original_count)*100:.1f}%")
+print(f"final features: {X_train_final.shape[1]} (from {original_count}, {(1 - X_train_final.shape[1]/original_count)*100:.1f}% reduction)")
 
-# ============================================================================
-# LEAVE-USER-OUT CROSS-VALIDATION
-# ============================================================================
-print("\n" + "="*60)
-print("LEAVE-USER-OUT CROSS-VALIDATION")
-print("="*60)
+# leave-user-out cross-validation
+print("\nLOO-CV")
 
 unique_users = np.unique(train_users)
 user_folds = {u: i % 5 for i, u in enumerate(unique_users)}
@@ -364,18 +327,13 @@ loo_acc = accuracy_score(y_train, loo_preds)
 print(f"\nOverall LOO-CV Accuracy: {loo_acc:.4f}")
 print(f"Mean fold accuracy: {np.mean(fold_scores):.4f} (+/- {np.std(fold_scores):.4f})")
 
-# Confusion matrix
 cm = confusion_matrix(y_train, loo_preds, normalize='true')
 print("\nConfusion Matrix (normalized):")
 for i in range(6):
     print(f"  Class {i}: " + " ".join([f"{x:.2f}" for x in cm[i]]))
 
-# ============================================================================
-# FINAL TRAINING
-# ============================================================================
-print("\n" + "="*60)
-print("FINAL TRAINING")
-print("="*60)
+# final training (15 models)
+print("\nfinal training")
 
 final_probas = []
 for seed in range(5):
@@ -397,7 +355,7 @@ for seed in range(5):
 
 avg_proba = np.mean(final_probas, axis=0)
 
-# Class boost
+# class frequency boost
 train_freq = np.array([counts[i]/len(y_train) for i in range(6)])
 pred_freq = avg_proba.mean(axis=0)
 boost = np.where(pred_freq > 0, train_freq / pred_freq, 1.0)
@@ -407,34 +365,11 @@ avg_proba_boosted /= avg_proba_boosted.sum(axis=1, keepdims=True)
 
 preds = avg_proba_boosted.argmax(axis=1)
 
-# ============================================================================
-# SAVE SUBMISSION
-# ============================================================================
+# save submission
 submission = pd.DataFrame({"Id": test_ids, "Label": preds})
 submission = submission.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run15.csv"
 submission.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution:")
-for c in range(6):
-    count = np.sum(preds == c)
-    expected = int(len(preds) * counts[c] / len(y_train))
-    print(f"  Class {c}: {count:5d} (expected: {expected:5d})")
-
-# ============================================================================
-# SUMMARY
-# ============================================================================
-print("\n" + "="*60)
-print("RUN15 SUMMARY")
-print("="*60)
-print(f"Data source: Original CSV files")
-print(f"Training samples: {X_train_raw.shape[0]}")
-print(f"Test samples: {X_test_raw.shape[0]}")
-print(f"Original features: {original_count}")
-print(f"Selected features: {X_train_final.shape[1]}")
-print(f"Feature reduction: {(1 - X_train_final.shape[1]/original_count)*100:.1f}%")
-print(f"\nLOO-CV Accuracy: {loo_acc:.4f}")
-print(f"Final features: {X_train_final.shape[1]}")
-print(f"\nScore: 0.7565")
-print("="*60)
+print(f"submission saved to {out_path}")
+print(f"LOO-CV accuracy: {loo_acc:.4f}  features: {X_train_final.shape[1]}/{original_count}")

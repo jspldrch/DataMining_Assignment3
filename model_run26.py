@@ -1,20 +1,4 @@
-"""
-model_run26.py — No augmentation + energy per segment for sx/sy/sz
-
-Both changes mirror the notebook's approach (no augmentation, energy in windows).
-run25: no augmentation only
-run26: no augmentation + energy per segment  (this script)
-
-The notebook explicitly computes energy=mean(x²) per window segment alongside
-mean, std, min, max. run26 adds energy to the sx/sy/sz segments (the dominant
-feature group at 28.8% importance in run23).
-
-Features: 382 (run23 base) + 30 (energy for 10 segments × 3 channels) = 412
-Augmentation: NO — same as notebook, class_weight='balanced' handles imbalance
-Models: 5 LGB + 2 XGB = 7 final, 5 folds × 1 LGB = 5 CV  (~20-30 min on laptop)
-
-Works on both Kaggle and local laptop (auto-detects output directory).
-"""
+# run26: 412 features (382 base + 30 energy per segment), 5 LGB + 2 XGB, lr=0.03, no augmentation
 
 import numpy as np
 import pandas as pd
@@ -46,9 +30,7 @@ print(f"Output dir: {OUT_DIR}")
 CLASS_NAMES = ["sit/stand", "walk_flat", "walk_down", "walk_up", "running", "other"]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING
-# ──────────────────────────────────────────────────────────────────────────────
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -64,9 +46,7 @@ def find_npz(name):
     if local.exists(): return str(local)
     raise FileNotFoundError(f"Cannot find {name}")
 
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
+print("loading data...")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -87,12 +67,10 @@ unique, counts = np.unique(y_tr, return_counts=True)
 print(f"Train: {X_tr.shape}  Test: {X_te.shape}  (no normalization, no augmentation)")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
-print(f"  class_weight='balanced' handles imbalance — same approach as notebook")
+print(f"  class_weight='balanced' handles imbalance")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# feature helpers
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s, 1),
@@ -120,7 +98,7 @@ def ac(s, lag):
     return num / (s1.std(1)*s2.std(1)+1e-10)
 
 def seg(s, n_seg):
-    """Standard: mean + std per segment (run23 baseline)."""
+    # mean + std per segment
     N, T = s.shape; sl = T // n_seg; out = []
     for i in range(n_seg):
         w = s[:, i*sl:(i+1)*sl]
@@ -128,9 +106,7 @@ def seg(s, n_seg):
     return out
 
 def seg_with_energy(s, n_seg):
-    """Extended: mean + std + energy per segment — NEW in run26.
-    Energy = mean(x²) captures rhythmic power bursts per window.
-    The notebook uses 5 stats per window; this adds the most informative 3rd."""
+    # mean + std + energy per segment (energy = mean(x²))
     N, T = s.shape; sl = T // n_seg; out = []
     for i in range(n_seg):
         w = s[:, i*sl:(i+1)*sl]
@@ -148,11 +124,7 @@ def trend3(s):
     return [first, last, last - first]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION — 412 features
-#   run23 base (382) + 30 energy features for sx/sy/sz segments
-#   (10 segments × 3 channels = 30 additional energy values)
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction — 412 features (382 base + 30 energy for sx/sy/sz segments)
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -209,12 +181,8 @@ X_tr_sc  = scaler.fit_transform(X_tr_feat)
 X_te_sc  = scaler.transform(X_te_feat)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# LOO-CV — 5 folds × 1 LGB = 5 CV models (fast)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("LOO-CV (5 folds × 1 LGB = 5 models)")
-print("="*60)
+# cv — 5 folds
+print("\ncv (5 folds x 1 LGB)...")
 
 unique_users = np.unique(users)
 user_folds   = {u: i % 5 for i, u in enumerate(unique_users)}
@@ -250,7 +218,6 @@ per_class_f1 = f1_score(y_tr, loo_preds, average=None)
 print(f"\nBaseline CV macro F1: {baseline_f1:.4f}")
 print("Per-class F1:", [f"{f:.3f}" for f in per_class_f1])
 
-# ── Confusion matrix ──────────────────────────────────────────────────────────
 cm = confusion_matrix(y_tr, loo_preds, normalize='true')
 print("\nCV Confusion Matrix (row=true, col=predicted):")
 print(f"  {'':16}" + "".join(f"    C{c}" for c in range(6)))
@@ -271,12 +238,8 @@ plt.close()
 print(f"  Saved: run26_confusion_matrix.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("THRESHOLD OPTIMIZATION")
-print("="*60)
+# threshold optimization
+print("\nthreshold optimization...")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -325,12 +288,8 @@ plt.close()
 print(f"  Saved: run26_per_class_f1.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING — 5 LGB + 2 XGB = 7 models
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FINAL TRAINING (5 LightGBM + 2 XGBoost = 7 models)")
-print("="*60)
+# final training — 5 LGB + 2 XGB
+print("\nfinal training (5 LGB + 2 XGB)...")
 
 sw = compute_sample_weight('balanced', y_tr)
 final_probas = []
@@ -368,9 +327,7 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE
-# ──────────────────────────────────────────────────────────────────────────────
+# feature group importance
 FEATURE_GROUPS = [
     (  0,  27, "std_channels"),
     ( 27,  36, "mag_std"),
@@ -388,9 +345,7 @@ FEATURE_GROUPS = [
     (394, 412, "trend_features"),
 ]
 
-print("\n" + "="*60)
-print("FEATURE GROUP IMPORTANCE (LightGBM gain, avg over 5 models)")
-print("="*60)
+print("\nfeature group importance (LGB gain, avg 5 models):")
 imp_matrix = np.zeros((len(lgb_models), X_tr_sc.shape[1]))
 for i, m in enumerate(lgb_models):
     imp_matrix[i] = m.booster_.feature_importance(importance_type='gain')
@@ -403,7 +358,7 @@ group_rows = []
 for start, end, name in FEATURE_GROUPS:
     g = avg_imp[start:end].sum()
     group_rows.append((name, end-start, g, g/total*100))
-    flag = " ← NEW" if name == "seg_std_ch+energy" else ""
+    flag = " [NEW]" if name == "seg_std_ch+energy" else ""
     print(f"  {name:<26} {end-start:>4}   {g/total*100:>7.1f}%{flag}")
 
 fig, ax = plt.subplots(figsize=(10, 5))
@@ -420,24 +375,12 @@ plt.close()
 print(f"  Saved: run26_feature_importance.png")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run26.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train rate):")
-for c in range(6):
-    cnt = (preds == c).sum()
-    exp = int(len(preds) * counts[c] / len(y_tr))
-    print(f"  Class {c}: {cnt:5d}  (expected ~{exp})")
-
-print(f"\nOptimal scales:          {np.round(optimal_scales, 3)}")
-print(f"CV F1 (threshold-opt):   {opt_f1:.4f}")
-print(f"CV F1 (baseline argmax): {baseline_f1:.4f}")
-print(f"Baseline run23:          0.7792  (augmentation + no energy segments)")
-print(f"run25:                   no augmentation + no energy segments")
-print(f"run26:                   no augmentation + energy per segment (this)")
+print(f"submission saved to {out_path}")
+print(f"CV F1: {baseline_f1:.4f}  -> after threshold opt: {opt_f1:.4f}")
+print(f"optimal scales: {np.round(optimal_scales, 3)}")

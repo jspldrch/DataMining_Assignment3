@@ -1,22 +1,4 @@
-"""
-model_run20.py — SMA features + Random Forest ensemble
-
-New additions over run18 (0.7738):
-1. Signal Magnitude Area (SMA) features — L1-norm version of magnitude.
-   SMA = (|ax| + |ay| + |az|) / 3 per timestep, then stats9 over the window.
-   Different from current mag = sqrt(ax²+ay²+az²) (L2-norm).
-   Literature shows SMA strongly separates static vs dynamic activities.
-   Added for mean channels, std channels, and jerk channels → +27 features.
-2. Random Forest added to ensemble (pure bagging vs LGB/XGB boosting).
-   RF errors are uncorrelated with boosted trees → reduces ensemble variance.
-   5 RF models (5 seeds) added to LGB(15) + XGB(9) = 29 total models.
-
-All run18 improvements kept:
-- Data augmentation for rare classes (AUG_NOISE_STD=0.05)
-- User-contextual features (45 z-score features)
-- Threshold optimization via LOO-CV (macro F1)
-- All 373 base features including mag_mean (run19 showed removing it hurts)
-"""
+# run20: 400+45 features (373 + 27 SMA), 15 LGB + 9 XGB + 5 RF, augmentation, per-user norm
 
 import numpy as np
 import pandas as pd
@@ -41,7 +23,6 @@ OUT_DIR = Path("/kaggle/working")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
-# Feature groups in the 445-dim vector (400 base + 45 user context)
 FEATURE_GROUPS = [
     (  0,  27, "std_channels"),
     ( 27,  36, "mag_std"),
@@ -57,16 +38,14 @@ FEATURE_GROUPS = [
     (365, 371, "crosscorr"),
     (371, 372, "zerocross"),
     (372, 373, "peaks"),
-    (373, 382, "sma_mean"),      # NEW
-    (382, 391, "sma_std"),       # NEW
-    (391, 400, "sma_jerk"),      # NEW
-    (400, 445, "user_context"),  # appended by add_user_context
+    (373, 382, "sma_mean"),
+    (382, 391, "sma_std"),
+    (391, 400, "sma_jerk"),
+    (400, 445, "user_context"),
 ]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA LOADING
-# ──────────────────────────────────────────────────────────────────────────────
+# load data
 def find_npz(name):
     search_paths = [
         Path("/kaggle/input") / name,
@@ -82,9 +61,7 @@ def find_npz(name):
         return hits[0]
     raise FileNotFoundError(f"Cannot find {name} in /kaggle/input/")
 
-print("=" * 60)
-print("LOADING DATA")
-print("=" * 60)
+print("loading data...")
 
 try:
     tr = np.load(find_npz("train_data.npz"), allow_pickle=True)
@@ -107,9 +84,7 @@ for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PER-USER NORMALIZATION
-# ──────────────────────────────────────────────────────────────────────────────
+# per-user normalization
 def user_normalise(X, user_ids):
     X_out = X.copy()
     for uid in np.unique(user_ids):
@@ -125,9 +100,7 @@ X_tr = user_normalise(X_tr_raw, users)
 X_te = user_normalise(X_te_raw, te_users)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DATA AUGMENTATION
-# ──────────────────────────────────────────────────────────────────────────────
+# data augmentation
 AUG_CONFIG    = {2: 5, 4: 5, 5: 2, 3: 1}
 AUG_NOISE_STD = 0.05
 
@@ -152,14 +125,12 @@ X_tr_aug, y_tr_aug, users_aug = augment_minority(
     X_tr, y_tr, users, AUG_CONFIG, AUG_NOISE_STD, SEED
 )
 aug_unique, aug_counts = np.unique(y_tr_aug, return_counts=True)
-print(f"  {len(y_tr)} → {len(y_tr_aug)} samples")
+print(f"  {len(y_tr)} -> {len(y_tr_aug)} samples")
 for u, c in zip(aug_unique, aug_counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_tr_aug)*100:.1f}%)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE HELPERS
-# ──────────────────────────────────────────────────────────────────────────────
+# feature helpers
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s, 1),
@@ -199,19 +170,7 @@ def xcorr(a, b):
     return (ca*cb).mean(1) / (ca.std(1)*cb.std(1)+1e-10)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION — 373 proven features + 27 new SMA features = 400 total
-#
-# SMA (Signal Magnitude Area): L1-norm sum of absolute channel values per step.
-#   sma_mean = (|mx| + |my| + |mz|) / 3  per timestep → stats9 → 9 features
-#   sma_std  = (|sx| + |sy| + |sz|) / 3  per timestep → stats9 → 9 features
-#   sma_jerk = (|jx| + |jy| + |jz|) / 3  per timestep → stats9 → 9 features
-#
-# Unlike L2-norm magnitude (sqrt(x²+y²+z²)), SMA:
-# - Does not square the values (less sensitive to large spikes)
-# - Is known in HAR literature to separate static from dynamic activities
-# - Complements rather than duplicates existing magnitude features
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction — 400 features (373 base + 27 SMA)
 def extract(X):
     N, T, _ = X.shape
     mx, my, mz = X[:,:,0], X[:,:,1], X[:,:,2]
@@ -221,18 +180,17 @@ def extract(X):
     jy = np.diff(my, axis=1)
     jz = np.diff(mz, axis=1)
 
-    mag_mean = np.sqrt(mx**2 + my**2 + mz**2)   # L2 magnitude of mean channels
-    mag_std  = np.sqrt(sx**2 + sy**2 + sz**2)   # L2 magnitude of std channels
-    mag_jerk = np.sqrt(jx**2 + jy**2 + jz**2)  # L2 magnitude of jerk
+    mag_mean = np.sqrt(mx**2 + my**2 + mz**2)
+    mag_std  = np.sqrt(sx**2 + sy**2 + sz**2)
+    mag_jerk = np.sqrt(jx**2 + jy**2 + jz**2)
 
-    # SMA signals (L1-norm, per timestep)
-    sma_mean = (np.abs(mx) + np.abs(my) + np.abs(mz)) / 3   # (N, 300)
-    sma_std  = (np.abs(sx) + np.abs(sy) + np.abs(sz)) / 3   # (N, 300)
-    sma_jerk = (np.abs(jx) + np.abs(jy) + np.abs(jz)) / 3  # (N, 299)
+    # SMA (L1-norm per timestep)
+    sma_mean = (np.abs(mx) + np.abs(my) + np.abs(mz)) / 3
+    sma_std  = (np.abs(sx) + np.abs(sy) + np.abs(sz)) / 3
+    sma_jerk = (np.abs(jx) + np.abs(jy) + np.abs(jz)) / 3
 
     parts = []
 
-    # ── run07's 373 features (unchanged) ─────────────────────────────────────
     for ch in [sx, sy, sz]:
         parts += stats9(ch)
     parts += stats9(mag_std)
@@ -271,10 +229,10 @@ def extract(X):
         pr[n] = len(find_peaks(mag_jerk[n], height=mag_jerk[n].mean())[0]) / T
     parts.append(pr)
 
-    # ── NEW: SMA features (+27) ───────────────────────────────────────────────
-    parts += stats9(sma_mean)   # 9 features: L1-norm of mean channels
-    parts += stats9(sma_std)    # 9 features: L1-norm of std channels
-    parts += stats9(sma_jerk)   # 9 features: L1-norm of jerk channels
+    # SMA features (+27)
+    parts += stats9(sma_mean)
+    parts += stats9(sma_std)
+    parts += stats9(sma_jerk)
 
     return np.column_stack([
         np.asarray(p).reshape(N, -1) if np.asarray(p).ndim > 1
@@ -282,13 +240,10 @@ def extract(X):
     ]).astype(np.float32)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# USER-CONTEXTUAL FEATURES (same as run18)
-# ──────────────────────────────────────────────────────────────────────────────
-N_CTX = 45   # stats9 × 5 channels (sx,sy,sz,mag_std,mag_mean) — first 45 features
+# user-contextual features (same as run18)
+N_CTX = 45
 
 def add_user_context(X_feat, user_ids, ref_feat=None, ref_user_ids=None):
-    """Append z-score of each window's key stats relative to that user's mean."""
     if ref_feat is None:
         ref_feat, ref_user_ids = X_feat, user_ids
     user_mean = {}; user_std = {}
@@ -304,10 +259,10 @@ def add_user_context(X_feat, user_ids, ref_feat=None, ref_user_ids=None):
 
 
 print("\nExtracting features...")
-X_tr_orig_feat = extract(X_tr)       # (11020, 400)
-X_tr_aug_feat  = extract(X_tr_aug)   # (15228, 400)
-X_te_feat      = extract(X_te)       # (6849,  400)
-print(f"  Base features: {X_tr_orig_feat.shape[1]} (373 original + 27 SMA)")
+X_tr_orig_feat = extract(X_tr)
+X_tr_aug_feat  = extract(X_tr_aug)
+X_te_feat      = extract(X_te)
+print(f"  Base features: {X_tr_orig_feat.shape[1]}")
 
 X_tr_aug_ctx = add_user_context(
     X_tr_aug_feat, users_aug,
@@ -321,12 +276,8 @@ X_tr_sc = scaler.fit_transform(X_tr_aug_ctx)
 X_te_sc = scaler.transform(X_te_ctx)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# LOO-CV WITH PROBABILITY COLLECTION (LightGBM only, fast)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("LOO-CV — collecting probabilities for threshold optimization")
-print("="*60)
+# cv
+print("\ncv (5 folds x 9 LGB)...")
 
 unique_users = np.unique(users)
 user_folds   = {u: i % 5 for i, u in enumerate(unique_users)}
@@ -384,12 +335,8 @@ print(f"\nBaseline CV macro F1: {baseline_f1:.4f}")
 print("Per-class F1:", [f"{f:.3f}" for f in per_class_f1])
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# THRESHOLD OPTIMIZATION
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("THRESHOLD OPTIMIZATION")
-print("="*60)
+# threshold optimization
+print("\nthreshold optimization...")
 
 def neg_macro_f1(log_scales, proba, y_true):
     scales = np.exp(log_scales)
@@ -420,16 +367,8 @@ print(f"CV F1 after opt: {opt_f1:.4f}  (was {baseline_f1:.4f}, +{opt_f1-baseline
 print("Per-class F1:", [f"{f:.3f}" for f in opt_per_class])
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FINAL TRAINING
-# LightGBM (15) + XGBoost (9) + Random Forest (5) = 29 models
-#
-# Random Forest uses bagging (bootstrap aggregation) — completely different
-# from LGB/XGB's gradient boosting. Uncorrelated errors → lower ensemble variance.
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FINAL TRAINING (15 LightGBM + 9 XGBoost + 5 RandomForest = 29 models)")
-print("="*60)
+# final training — 15 LGB + 9 XGB + 5 RF
+print("\nfinal training (15 LGB + 9 XGB + 5 RF)...")
 
 sw_aug = compute_sample_weight('balanced', y_tr_aug)
 
@@ -443,9 +382,8 @@ XGB_CONFIGS = [
 ]
 
 final_probas    = []
-lgb_importances = []   # collect gain importance from each LGB model
+lgb_importances = []
 
-# LightGBM: 5 seeds × 3 configs = 15 models
 for seed in range(5):
     for cfg in CONFIGS:
         m = lgb.LGBMClassifier(
@@ -458,7 +396,6 @@ for seed in range(5):
         lgb_importances.append(m.feature_importances_)
 print(f"  LightGBM: {len(final_probas)} models trained")
 
-# XGBoost: 3 seeds × 3 configs = 9 models
 xgb_start = len(final_probas)
 for seed in range(3):
     for cfg in XGB_CONFIGS:
@@ -471,7 +408,6 @@ for seed in range(3):
         final_probas.append(xm.predict_proba(X_te_sc))
 print(f"  XGBoost:  {len(final_probas) - xgb_start} models trained")
 
-# Random Forest: 5 seeds = 5 models
 rf_start = len(final_probas)
 for seed in range(5):
     rf = RandomForestClassifier(
@@ -493,12 +429,8 @@ scaled_test /= scaled_test.sum(axis=1, keepdims=True)
 preds = scaled_test.argmax(1)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE GROUP IMPORTANCE (averaged over 15 LightGBM models)
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("FEATURE GROUP IMPORTANCE (LightGBM gain, avg over 15 models)")
-print("="*60)
+# feature group importance
+print("\nfeature group importance (LGB gain, avg 15 models):")
 
 avg_imp   = np.mean(lgb_importances, axis=0)
 total_imp = avg_imp.sum()
@@ -515,27 +447,16 @@ print("  " + "-"*50)
 for name, n, imp, pct in rows:
     print(f"  {name:<20} {n:>5}  {imp:>12.1f}  {pct:>7.1f}%")
 
-# Save CSV for report
 pd.DataFrame(rows, columns=["group","n_features","importance","pct_total"])\
   .to_csv(OUT_DIR / "feature_group_importance_run20.csv", index=False)
 print(f"\n  Saved: {OUT_DIR / 'feature_group_importance_run20.csv'}")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SAVE SUBMISSION
-# ──────────────────────────────────────────────────────────────────────────────
+# save submission
 sub = pd.DataFrame({"Id": te_ids, "Label": preds})
 sub = sub.sort_values("Id").reset_index(drop=True)
 out_path = OUT_DIR / "submission_run20.csv"
 sub.to_csv(out_path, index=False)
 
-print(f"\n✅ Submission saved: {out_path}")
-print("\nPrediction distribution (predicted vs expected from train rate):")
-for c in range(6):
-    cnt = (preds == c).sum()
-    exp = int(len(preds) * counts[c] / len(y_tr))
-    print(f"  Class {c}: {cnt:5d}  (expected ~{exp})")
-
-print(f"\nOptimal scales:          {np.round(optimal_scales, 3)}")
-print(f"CV F1 (threshold-opt):   {opt_f1:.4f}")
-print(f"CV F1 (baseline argmax): {baseline_f1:.4f}")
-print(f"Baseline run18:          0.7738")
+print(f"submission saved to {out_path}")
+print(f"CV F1: {baseline_f1:.4f}  -> after threshold opt: {opt_f1:.4f}")
+print(f"optimal scales: {np.round(optimal_scales, 3)}")

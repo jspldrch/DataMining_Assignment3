@@ -1,12 +1,4 @@
-"""
-model_run21.py — Diagnostic only. No model training.
-
-Key questions:
-  1. How many users actually have Class 2 windows?
-  2. How many Class 2 samples are in each validation fold?
-  3. What do Class 1 vs Class 2 signals look like visually?
-  4. How much does Class 2 vary across users? (cross-user generalization difficulty)
-"""
+# run21: diagnostic script only — no model training, class 2 analysis
 
 import numpy as np
 import pandas as pd
@@ -20,7 +12,6 @@ OUT_DIR = Path("/kaggle/working") if Path("/kaggle/working").exists() \
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
 
-# ── Load ───────────────────────────────────────────────────────────────────────
 def find_npz(name):
     hits = glob.glob(f"/kaggle/input/**/{name}", recursive=True)
     if hits: return hits[0]
@@ -38,16 +29,11 @@ N_USERS   = len(unique_users)
 N_CLASSES = 6
 CLASS_NAMES = ["sit/stand", "walk flat", "walk down", "walk up", "running", "other"]
 
-print(f"Train shape: {X_tr.shape}  —  {N_USERS} users, {len(y_tr)} windows")
+print(f"Train shape: {X_tr.shape}  --  {N_USERS} users, {len(y_tr)} windows")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. PER-USER CLASS DISTRIBUTION
-# ══════════════════════════════════════════════════════════════════════════════
-
-print("\n" + "="*60)
-print("1. PER-USER CLASS DISTRIBUTION")
-print("="*60)
+# 1. per-user class distribution
+print("\n1. per-user class distribution")
 
 user_class_counts = np.zeros((N_USERS, N_CLASSES), dtype=int)
 for i, uid in enumerate(unique_users):
@@ -67,14 +53,8 @@ for c in range(N_CLASSES):
                 print(f"    User {uid:>4}: {n:>4} windows")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. CV FOLD STRUCTURE — how many Class 2 samples per validation fold?
-# ══════════════════════════════════════════════════════════════════════════════
-
-print("\n" + "="*60)
-print("2. CV FOLD — CLASS 2 VALIDATION SAMPLES PER FOLD")
-print("="*60)
-print("(If any fold has 0 Class 2 val samples, that fold's F1 for C2 is undefined)")
+# 2. cv fold structure - class 2 samples per fold
+print("\n2. cv fold - class 2 validation samples per fold")
 
 user_folds = {u: i % 5 for i, u in enumerate(unique_users)}
 fold_ids   = np.array([user_folds[u] for u in users])
@@ -98,10 +78,7 @@ for fold in range(5):
         print(f"  !! NO Class 2 windows in validation set !!")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. PER-USER NORMALIZATION
-# ══════════════════════════════════════════════════════════════════════════════
-
+# 3. per-user normalization
 def user_normalise(X, user_ids):
     X_out = X.copy()
     for uid in np.unique(user_ids):
@@ -125,9 +102,7 @@ jz = np.diff(mz, axis=1)
 mag_jerk = np.sqrt(jx**2 + jy**2 + jz**2)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 4. SIGNAL PROFILES: Class 0 vs 1 vs 2 vs 4
-# ══════════════════════════════════════════════════════════════════════════════
+# 4. signal profiles: C0 vs C1 vs C2 vs C4
 
 class_colors  = {0: "green", 1: "steelblue", 2: "red", 4: "orange"}
 class_labels  = {0: "C0 sit/stand", 1: "C1 walk flat", 2: "C2 walk down", 4: "C4 running"}
@@ -173,9 +148,7 @@ plt.close()
 print(f"\nSaved: {path}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. HEATMAP: windows per user per class
-# ══════════════════════════════════════════════════════════════════════════════
+# 5. heatmap: windows per user per class
 
 norm_counts = user_class_counts / (user_class_counts.max(0, keepdims=True) + 1e-10)
 
@@ -193,14 +166,8 @@ plt.close()
 print(f"Saved: {path}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 6. CLASS 2 INTER-USER VARIABILITY
-#    High CV (std/mean) = users differ a lot = hard to generalize cross-user
-# ══════════════════════════════════════════════════════════════════════════════
-
-print("\n" + "="*60)
-print("6. CLASS 2 INTER-USER VARIABILITY")
-print("="*60)
+# 6. class 2 inter-user variability
+print("\n6. class 2 inter-user variability")
 
 c2_user_stats = {}
 for uid in unique_users:
@@ -244,16 +211,11 @@ for uid in unique_users:
 
 print(f"\n  Class 1 mag_jerk: {cv(c1_jerk):.3f}  (baseline — easy class)")
 print(f"  Class 1 mag_mean: {cv(c1_mean):.3f}")
-print(f"\n  >> If Class 2 CV >> Class 1 CV, users differ too much for cross-user generalization.")
+print(f"\n  high Class 2 CV = users vary a lot = hard to generalize")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 7. SUMMARY TABLE: mean feature values by class
-# ══════════════════════════════════════════════════════════════════════════════
-
-print("\n" + "="*60)
-print("7. MEAN FEATURE VALUES BY CLASS")
-print("="*60)
+# 7. mean feature values by class
+print("\n7. mean feature values by class")
 
 rows = []
 for c in range(N_CLASSES):

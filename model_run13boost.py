@@ -1,11 +1,4 @@
-"""
-model_run19_two_stage.py — Two-stage training for rare classes
-Stage 1: Binary classifier for Class 2 (Walking Downstairs)
-Stage 2: Multiclass for remaining classes
-Stage 3: Ensemble with class-specific weights
-
-Expected improvement: 0.7707 → 0.775-0.780
-"""
+# run13boost: two-stage training — binary detectors for class 2 and 4, then 15 LGB multiclass
 
 import numpy as np
 import pandas as pd
@@ -20,7 +13,6 @@ import lightgbm as lgb
 import warnings
 warnings.filterwarnings('ignore')
 
-# Configuration
 OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Output dir: {OUT_DIR}")
@@ -28,9 +20,7 @@ print(f"Output dir: {OUT_DIR}")
 SEED = 42
 np.random.seed(SEED)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# LOAD NPZ DATA (use run07's proven data source)
-# ──────────────────────────────────────────────────────────────────────────────
+# load data
 def find_npz(name):
     hits = glob.glob(f"**/{name}", recursive=True)
     if hits:
@@ -53,9 +43,7 @@ print(f"Train: {X_train_raw.shape}, Test: {X_test_raw.shape}")
 for u, c in zip(unique, counts):
     print(f"  Class {u}: {c:5d} ({c/len(y_train)*100:.1f}%)")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PER-USER NORMALIZATION (same as run07)
-# ──────────────────────────────────────────────────────────────────────────────
+# per-user normalization
 def user_normalize(X, user_ids):
     X_out = X.copy()
     for uid in np.unique(user_ids):
@@ -71,9 +59,7 @@ print("\nPer-user normalization...")
 X_train = user_normalize(X_train_raw, train_users)
 X_test = user_normalize(X_test_raw, test_users)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FEATURE EXTRACTION (same as run07 - 373 features)
-# ──────────────────────────────────────────────────────────────────────────────
+# feature extraction (373 features, same as run07)
 def stats9(s):
     return [s.mean(1), s.std(1), s.min(1), s.max(1),
             s.max(1)-s.min(1), np.median(s,1),
@@ -180,18 +166,10 @@ scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train_feat)
 X_test_scaled = scaler.transform(X_test_feat)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# TWO-STAGE TRAINING
-# ──────────────────────────────────────────────────────────────────────────────
-print("\n" + "="*60)
-print("TWO-STAGE TRAINING FOR RARE CLASSES")
-print("="*60)
-
-# Stage 1: Binary classifier for Class 2 (vs all others)
-print("\nStage 1: Training Class 2 detector...")
+# two-stage training: binary detectors for class 2 and 4, then multiclass
+print("\nStage 1: class 2 binary detector")
 y_class2_binary = (y_train == 2).astype(int)
 
-# Oversample Class 2 for binary classifier
 class2_indices = np.where(y_class2_binary == 1)[0]
 class2_count = len(class2_indices)
 non_class2_indices = np.where(y_class2_binary == 0)[0]
@@ -212,12 +190,11 @@ binary_model = lgb.LGBMClassifier(
 )
 binary_model.fit(X_balanced, y_balanced)
 
-# Predict probability of Class 2
 class2_proba = binary_model.predict_proba(X_test_scaled)[:, 1]
-print(f"  Class 2 detection model trained")
+print(f"  class 2 detector trained")
 
-# Stage 2: Train separate model for Class 4
-print("\nStage 2: Training Class 4 detector...")
+# stage 2: class 4 binary detector
+print("\nStage 2: class 4 binary detector")
 y_class4_binary = (y_train == 4).astype(int)
 
 class4_indices = np.where(y_class4_binary == 1)[0]
@@ -241,16 +218,15 @@ binary_model4 = lgb.LGBMClassifier(
 binary_model4.fit(X_balanced4, y_balanced4)
 
 class4_proba = binary_model4.predict_proba(X_test_scaled)[:, 1]
-print(f"  Class 4 detection model trained")
+print(f"  class 4 detector trained")
 
-# Stage 3: Main multiclass model (all classes)
-print("\nStage 3: Training main multiclass model...")
+# stage 3: main multiclass model with higher weight on rare classes
+print("\nStage 3: multiclass model")
 
-# Give higher weight to rare classes
 sample_weights = np.ones(len(y_train))
-sample_weights[y_train == 2] = 5.0  # 5x weight for Class 2
-sample_weights[y_train == 4] = 8.0  # 8x weight for Class 4
-sample_weights[y_train == 5] = 2.0  # 2x weight for Class 5
+sample_weights[y_train == 2] = 5.0
+sample_weights[y_train == 4] = 8.0
+sample_weights[y_train == 5] = 2.0
 
 CONFIGS = [
     dict(num_leaves=31, learning_rate=0.05, colsample_bytree=0.7, subsample=0.7),
